@@ -1,0 +1,156 @@
+import type { Metadata, Viewport } from "next";
+import { Fraunces, Inter } from "next/font/google";
+import "./globals.css";
+import { SITE } from "@/lib/utils";
+import Header from "@/components/Header";
+import Footer from "@/components/Footer";
+import Analytics from "@/components/Analytics";
+import PwaRegister from "@/components/PwaRegister";
+
+const inter = Inter({ subsets: ["latin"], variable: "--font-inter", display: "swap" });
+const fraunces = Fraunces({ subsets: ["latin"], variable: "--font-display", display: "swap", weight: ["400", "500", "600"] });
+
+export const metadata: Metadata = {
+  metadataBase: new URL(SITE.url),
+  title: {
+    default: `${SITE.name} — Premium Imports, Priced Without the Middleman`,
+    template: `%s | ${SITE.name}`,
+  },
+  description:
+    "MatzHub curates imported master-quality watches, handbags, footwear, eyewear and apparel. Honest pricing from real manufacturer cost. ≤5 hours hour dispatch, 7-day replacement.",
+  keywords: [
+    "premium imported fashion india",
+    "imported first copy watches",
+    "master quality handbags india",
+    "imported fashion india",
+    "private reseller catalog",
+  ],
+  applicationName: SITE.name,
+  authors: [{ name: SITE.name, url: SITE.url }],
+  creator: SITE.name,
+  publisher: SITE.legalName,
+  alternates: { canonical: "/", types: { "application/json": "/products.json" } },
+  openGraph: {
+    type: "website",
+    siteName: SITE.name,
+    locale: "en_IN",
+    url: SITE.url,
+    title: `${SITE.name} — curated imports Fashion`,
+    description: "Quality-scored imports. Honest pricing. Delivered across India.",
+  },
+  twitter: { card: "summary_large_image", site: "@matzhub" },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, "max-image-preview": "large", "max-snippet": -1, "max-video-preview": -1 },
+  },
+  category: "shopping",
+};
+
+export const viewport: Viewport = {
+  themeColor: "#f3f1ec",
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
+};
+
+const orgLd = {
+  "@context": "https://schema.org",
+  "@graph": [
+    {
+      "@type": "Organization",
+      "@id": `${SITE.url}/#organization`,
+      name: SITE.name,
+      legalName: SITE.legalName,
+      url: SITE.url,
+      logo: `${SITE.url}/web-app-manifest-512x512.png`,
+      foundingDate: SITE.founded,
+      slogan: SITE.tagline,
+                  description:
+        "MatzHub curates imported master-quality accessories and apparel and prices them without mid-channel markups. Serving all of India.",
+      knowsAbout: ["imported fashion accessories", "master quality watches", "first copy handbags", "pan-India imported fashion"],
+      areaServed: { "@type": "Country", name: "India" },
+      address: {
+        "@type": "PostalAddress",
+        streetAddress: "Shop No. 11 & 12, 1st Floor, MK Complex, Melekote Main Road, Sadashivanagar",
+        addressLocality: "Tumakuru",
+        addressRegion: "Karnataka",
+        postalCode: "572101",
+        addressCountry: "IN",
+      },
+      sameAs: [SITE.instagram],
+      contactPoint: [
+        {
+          "@type": "ContactPoint",
+          contactType: "customer support",
+          telephone: `+${SITE.whatsapp}`,
+          areaServed: "IN",
+          availableLanguage: ["en", "hi", "kn"],
+        },
+      ],
+    },
+    {
+      "@type": "WebSite",
+      "@id": `${SITE.url}/#website`,
+      url: SITE.url,
+      name: SITE.name,
+      publisher: { "@id": `${SITE.url}/#organization` },
+      inLanguage: "en-IN",
+      potentialAction: {
+        "@type": "SearchAction",
+        target: { "@type": "EntryPoint", urlTemplate: `${SITE.url}/search?q={search_term_string}` },
+        "query-input": "required name=search_term_string",
+      },
+    },
+    {
+      "@type": "OnlineStore",
+      "@id": `${SITE.url}/#store`,
+      name: SITE.name,
+      url: SITE.url,
+      currenciesAccepted: "INR",
+      paymentAccepted: "UPI, Card, Bank Transfer",
+      areaServed: { "@type": "Country", name: "India" },
+      hasMerchantReturnPolicy: {
+        "@type": "MerchantReturnPolicy",
+        applicableCountry: "IN",
+        returnPolicyCategory: "https://schema.org/MerchantReturnFiniteReturnWindow",
+        merchantReturnDays: 7,
+        returnMethod: "https://schema.org/ReturnByMail",
+        returnFees: "https://schema.org/FreeReturn",
+      },
+    },
+  ],
+};
+
+export default function RootLayout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en-IN" data-theme="porcelain" className={`${inter.variable} ${fraunces.variable}`}>
+      <head>
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+        <link rel="icon" href="/favicon.ico" sizes="any" />
+        <link rel="icon" href="/favicon-96x96.png" type="image/png" sizes="96x96" />
+        <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+        {/* The manifest is generated by src/app/manifest.ts and injected by Next
+            as /manifest.webmanifest. Do not add a second rel="manifest" here. */}
+        <link rel="preconnect" href="https://images.pexels.com" />
+        <link rel="dns-prefetch" href="https://images.pexels.com" />
+        <script
+          dangerouslySetInnerHTML={{
+            __html: `(function(){try{var t=localStorage.getItem('mh_theme');var ok=['porcelain','espresso'];document.documentElement.setAttribute('data-theme',(t&&ok.indexOf(t)>=0)?t:'porcelain');}catch(e){document.documentElement.setAttribute('data-theme','porcelain');}})();`,
+          }}
+        />
+        <script type="application/ld+json" dangerouslySetInnerHTML={{ __html: JSON.stringify(orgLd) }} />
+      </head>
+      <body>
+        <a href="#main" className="skip-link">
+          Skip to content
+        </a>
+        <Header />
+        <main id="main">{children}</main>
+        <Footer />
+        <Analytics />
+        <PwaRegister />
+      </body>
+    </html>
+  );
+}

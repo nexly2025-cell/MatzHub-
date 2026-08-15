@@ -1,0 +1,282 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-canvas: var(--c-canvas);
+  --color-surface: var(--c-surface);
+  --color-surface-2: var(--c-surface-2);
+  --color-surface-3: var(--c-surface-3);
+  --color-ink: var(--c-ink);
+  --color-muted: var(--c-muted);
+  --color-subtle: var(--c-subtle);
+  --color-line: var(--c-line);
+  --color-linestrong: var(--c-line-strong);
+  --color-accent: var(--c-accent);
+  --color-accentink: var(--c-accent-ink);
+  --color-inverse: var(--c-inverse);
+  --color-oninverse: var(--c-on-inverse);
+  --color-whatsapp: var(--c-whatsapp);
+  --color-danger: var(--c-danger);
+  --color-success: var(--c-success);
+}
+
+/* ============================================================================
+   MATZHUB THEME SYSTEM — ported from the approved design (6 palettes).
+   Swap data-theme on <html> to restyle the entire storefront at once.
+   ========================================================================== */
+
+:root,
+[data-theme="porcelain"] {
+  --c-canvas: #f3f1ec;  --c-surface: #ffffff;  --c-surface-2: #ebe8e1;  --c-surface-3: #dfdbd2;
+  --c-ink: #15201e;    --c-muted: #5e6663;     --c-subtle: #8d938f;
+  --c-line: #e0ddd5;   --c-line-strong: #c9c5ba;
+  --c-accent: #1f5f5b; --c-accent-ink: #164643;--c-accent-soft: #e4edeb;
+  --c-inverse: #15201e;--c-on-inverse: #f3f1ec;
+  --c-success: #1b6f47;--c-success-soft: #e5f0e9;
+  --c-danger: #a32a2a; --c-whatsapp: #128c4a;
+  --c-scrim: rgba(21, 32, 30, 0.45);
+  --shadow-card: 0 1px 2px rgba(21,32,30,0.04), 0 10px 30px -18px rgba(21,32,30,0.22);
+  --shadow-lift: 0 2px 6px rgba(21,32,30,0.05), 0 22px 48px -22px rgba(21,32,30,0.28);
+}
+[data-theme="espresso"] {
+  --c-canvas: #161110;  --c-surface: #1e1917;  --c-surface-2: #241e1b;  --c-surface-3: #2c2521;
+  --c-ink: #efe9df;    --c-muted: #a99e92;     --c-subtle: #7a6f64;
+  --c-line: #2b241f;   --c-line-strong: #3a312a;
+  --c-accent: #b98a4b; --c-accent-ink: #cfa66a;--c-accent-soft: #2c2318;
+  --c-inverse: #efe9df;--c-on-inverse: #161110;
+  --c-success: #5f9f6a;--c-success-soft: #1f291c;
+  --c-danger: #d97070; --c-whatsapp: #19a95c;
+  --c-scrim: rgba(10, 7, 6, 0.6);
+  --shadow-card: 0 1px 2px rgba(0,0,0,0.3), 0 10px 30px -18px rgba(0,0,0,0.5);
+  --shadow-lift: 0 2px 6px rgba(0,0,0,0.35), 0 22px 48px -22px rgba(0,0,0,0.55);
+}
+
+/* ---------------- base ---------------- */
+:root { color-scheme: light; }
+[data-theme="espresso"] { color-scheme: dark; --shadow-card: var(--shadow-card); }
+
+/* Mobile-first fluid root.
+   Everything rem-based in Tailwind — type, padding, gap, margin — scales from
+   this single value, so laptops stop rendering phone-sized content. Expressed
+   in px/vw only; a rem inside the clamp would be self-referential.
+     375px → 16.0px    1024px → 17.5px    1440px → 18px (capped) */
+html {
+  scroll-behavior: smooth;
+  font-size: clamp(16px, calc(15.2px + 0.22vw), 18px);
+}
+body {
+  background: var(--c-canvas);
+  color: var(--c-ink);
+  font-family: var(--font-sans, "Inter", system-ui, sans-serif);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow-x: hidden;
+}
+::selection { background: var(--c-accent); color: #fff; }
+
+/* Mobile frame hardening */
+html, body { max-width: 100%; }
+img, video, svg, iframe, table, dl, pre { max-width: 100%; }
+dl, p, li, dd, dt, h1, h2, h3, h4, th, td { overflow-wrap: anywhere; }
+body { -webkit-text-size-adjust: 100%; }
+article, section, header, footer, nav, aside, main { min-width: 0; }
+.grid, .flex { min-width: 0; }
+
+/* Specs and order tables never overflow 320px widths */
+@media (max-width: 480px) {
+  dl > div { flex-wrap: wrap; }
+  table { display: block; overflow-x: auto; white-space: normal; }
+    .field, .btn { font-size: 0.75rem; }
+}
+
+:focus-visible { outline: 2px solid var(--c-accent); outline-offset: 3px; border-radius: 4px; }
+
+.font-display { font-family: var(--font-display, "Fraunces", Georgia, serif); }
+
+/**
+ * Page container.
+ *
+ * `.shell` and `.display` were referenced by 17 files but never defined, so
+ * every page using them rendered with no max-width and no horizontal padding —
+ * text ran edge to edge on desktop and touched the screen border on mobile.
+ * That is the "sticks to the corners / looks unfinished" symptom.
+ */
+.shell {
+  width: 100%;
+  max-width: 1400px;
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+@media (min-width: 640px) { .shell { padding-inline: 1.5rem; } }
+@media (min-width: 1024px) { .shell { padding-inline: 2.5rem; } }
+
+/* Display type. Fluid so headings scale with the viewport rather than
+   staying phone-sized on a laptop. */
+.display {
+  font-family: var(--font-display, "Fraunces", Georgia, serif);
+  font-weight: 500;
+  line-height: 1.06;
+  letter-spacing: -0.015em;
+  color: var(--c-ink);
+}
+
+/**
+ * Editorial type scale.
+ *
+ * Informational pages had grown 15 distinct font sizes and 5 line-heights
+ * (text-[13px], [13.5px], [14.5px], [15px], leading-relaxed, [1.7], [1.75],
+ * [1.85]…). No two pages agreed, which is what made the writing read as
+ * generic even though the content was fine. These five classes replace all of
+ * them, so every informational surface shares one rhythm.
+ *
+ * Sizes are rem-based and therefore scale with the fluid root defined above.
+ */
+
+/* Page title. */
+.t-title {
+  font-family: var(--font-display, "Fraunces", Georgia, serif);
+  font-weight: 500;
+  font-size: clamp(2rem, 6vw, 3.1rem);
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+  color: var(--c-ink);
+}
+
+/* Section heading inside a document. */
+.t-heading {
+  font-family: var(--font-display, "Fraunces", Georgia, serif);
+  font-weight: 500;
+  font-size: clamp(1.15rem, 2.6vw, 1.4rem);
+  line-height: 1.25;
+  letter-spacing: -0.01em;
+  color: var(--c-ink);
+}
+
+/* Standfirst under a title. Slightly larger and looser than body. */
+.t-lead {
+  font-size: clamp(0.98rem, 1.9vw, 1.075rem);
+  line-height: 1.72;
+  letter-spacing: 0.002em;
+  color: var(--c-muted);
+}
+
+/* Body copy. 1.8 leading is the comfortable range for long-form on screen. */
+.t-body {
+  font-size: 0.925rem;
+  line-height: 1.8;
+  letter-spacing: 0.004em;
+  color: var(--c-muted);
+}
+
+/* Captions, metadata, timestamps. */
+.t-meta {
+  font-size: 0.78rem;
+  line-height: 1.6;
+  letter-spacing: 0.01em;
+  color: var(--c-subtle);
+}
+
+/* Caps a text column at a comfortable reading measure (~68 characters).
+   Long URLs in legal copy would otherwise force a horizontal scrollbar. */
+.measure {
+  max-width: 68ch;
+  overflow-wrap: break-word;
+}
+
+/* Keeps a fixed bottom bar clear of the iOS home indicator. */
+.pb-safe { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)); }
+
+/* Var-driven utility colors */
+.bg-canvas{background:var(--c-canvas)}\.bg-surface{background:var(--c-surface)}.bg-surface2{background:var(--c-surface-2)}.bg-inverse{background:var(--c-inverse)}.bg-accent{background:var(--c-accent)}
+.text-ink{color:var(--c-ink)}.text-muted{color:var(--c-muted)}.text-subtle{color:var(--c-subtle)}.text-accent{color:var(--c-accent)}.text-oninverse{color:var(--c-on-inverse)}
+.border-line{border-color:var(--c-line)}.border-linestrong{border-color:var(--c-line-strong)}
+.shadow-card{box-shadow:var(--shadow-card)}.shadow-lift{box-shadow:var(--shadow-lift)}
+.bg-whatsapp{background:var(--c-whatsapp)}
+.accent-soft{background:var(--c-accent-soft)}
+
+/* Buttons */
+.btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.5rem;
+  font-weight: 500; font-size: 0.8125rem; letter-spacing: 0.12em; text-transform: uppercase;
+  border-radius: 999px; padding: 0.85rem 1.6rem;
+  /* 2.75rem tracks the fluid root so the target grows with the viewport,
+     while never dropping below the 44px minimum on a phone. */
+  min-height: 2.75rem;
+  transition: all 0.3s cubic-bezier(.2,.8,.2,1);
+}
+.btn:active{transform: scale(.98)}
+.btn-solid  { background: var(--c-inverse); color: var(--c-on-inverse); box-shadow: var(--shadow-card); }
+.btn-solid:hover{ opacity: .86 }
+.btn-outline{ border: 1px solid var(--c-line-strong); color: var(--c-ink); }
+.btn-outline:hover{ background: var(--c-surface-2); border-color: var(--c-ink) }
+.btn-ghost  { color: var(--c-muted); }
+.btn-ghost:hover{ color: var(--c-ink); background: var(--c-surface-2) }
+.btn-accent { background: var(--c-accent); color: #fff; }
+.btn-accent:hover{ background: var(--c-accent-ink) }
+.btn-whatsapp{ background: var(--c-whatsapp); color: #fff; }
+.btn-whatsapp:hover{ filter: brightness(1.08) }
+
+/* Card + surfaces */
+.surface {
+  background: var(--c-surface);
+  border: 1px solid var(--c-line);
+  border-radius: 0.9rem;
+  transition: border-color 0.4s, box-shadow 0.4s;
+}
+
+/* Referenced by the homepage collection tiles and the recently-viewed rail.
+   Previously used in both places but never defined, so the intended hover
+   affordance silently did nothing. Suppressed for reduced-motion users by the
+   global rule further down this file. */
+.card-lift {
+  transition: transform 0.35s ease, box-shadow 0.35s ease;
+}
+.card-lift:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-card);
+}
+
+.label {
+  font-size: 0.68rem; letter-spacing: 0.16em; text-transform: uppercase; font-weight: 600;
+}
+
+.eyebrow {
+  font-size: 0.68rem; letter-spacing: 0.22em; text-transform: uppercase;
+  color: var(--c-muted); font-weight: 600;
+}
+
+.field {
+  width: 100%; background: var(--c-surface); color: var(--c-ink);
+  border: 1px solid var(--c-line); border-radius: 0.6rem; padding: 0.72rem 0.9rem;
+  font-size: 0.9rem; min-height: 44px;
+}
+.field::placeholder { color: var(--c-subtle); }
+.field:focus { outline: none; border-color: var(--c-accent); }
+.field-label { display: block; font-size: 0.72rem; color: var(--c-muted); margin-bottom: 0.35rem; font-weight: 500; }
+
+.chip {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  border: 1px solid var(--c-line); border-radius: 999px;
+  padding: 0.38rem 0.8rem; font-size: 0.72rem; color: var(--c-muted);
+  transition: all 0.2s; background: var(--c-surface);
+}
+.chip:hover { color: var(--c-ink); border-color: var(--c-line-strong); }
+.chip[data-on="true"] { background: var(--c-inverse); color: var(--c-on-inverse); border-color: var(--c-inverse); font-weight: 600; }
+
+/* Motion */
+@keyframes rise { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: none } }
+.animate-rise { animation: rise .65s cubic-bezier(.2,.8,.2,1) both }
+.rise { animation: rise .6s cubic-bezier(.2,.8,.2,1) both }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .001ms !important; transition-duration: .001ms !important; scroll-behavior: auto !important; }
+}
+
+::-webkit-scrollbar { display: none; }
+* { scrollbar-width: none; }
+.no-scrollbar::-webkit-scrollbar { display: none; }
+.no-scrollbar { scrollbar-width: none; }
+
+.skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; }
+.skip-link:focus { left: 1rem; top: 1rem; background: var(--c-inverse); color: var(--c-on-inverse); padding: .6rem 1rem; border-radius: .4rem; }
+
+.safe-area-pb { padding-bottom: env(safe-area-inset-bottom); }

@@ -1,0 +1,21 @@
+{
+  "name": "matzhub-whatsapp-worker",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Listens to manufacturer WhatsApp groups and feeds the MatzHub ingestion API.",
+  "main": "whatsapp-worker.mjs",
+  "scripts": {
+    "start": "node whatsapp-worker.mjs",
+    "dev": "node --watch whatsapp-worker.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "ffmpeg-static": "^5.2.0",
+    "qrcode": "^1.5.4",
+    "sharp": "0.35.3"
+  }
+}

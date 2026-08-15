@@ -1,0 +1,37 @@
+name: WhatsApp scheduled sync
+
+on:
+  schedule:
+    - cron: '0 2 * * *' # daily at 02:00 UTC
+  workflow_dispatch: {}
+
+jobs:
+  run-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install worker deps
+        working-directory: worker
+        run: npm install --no-audit --no-fund
+
+      - name: Run WhatsApp worker (scheduled)
+        working-directory: worker
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+          SUPABASE_BUCKET: ${{ secrets.SUPABASE_BUCKET }}
+          INGEST_TOKEN: ${{ secrets.INGEST_TOKEN }}
+          MATZHUB_API_URL: ${{ secrets.MATZHUB_API_URL }}
+          WA_SESSION_DIR: .wa-session
+          WA_RUN_MS: ${{ secrets.WA_RUN_MS || '900000' }}
+        run: |
+          node ensure-supabase-buckets.mjs || true
+          node whatsapp-worker.mjs

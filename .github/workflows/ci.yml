@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request: { branches: [main] }
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Typecheck
+        run: npx next typegen && npm exec tsc -- --noEmit --pretty false
+
+      - name: Tests
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+      - name: Privacy invariant
+        run: |
+          PUBLIC_PATTERNS="Partner [A-E]-01|costPrice|cost_price|manufacturerId|source_group|sourceGroup"
+          FILES=$(find src/app src/components src/lib -name "*.tsx" -o -name "*.ts" | grep -v "__tests__" | grep -v admin)
+          echo "$FILES" | xargs grep -E "$PUBLIC_PATTERNS" && { echo "Privacy leak detected: public surface references forbidden fields"; exit 1; } || echo "Privacy invariant holds"

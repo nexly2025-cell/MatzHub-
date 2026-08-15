@@ -1,0 +1,66 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": "nextjs",
+  "cleanUrls": true,
+  "trailingSlash": false,
+  "functions": {
+    "src/app/api/**": {
+      "memory": 512,
+      "maxDuration": 60
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/cron/notify",
+      "schedule": "0 */2 * * *"
+    },
+    {
+      "path": "/api/cron/self-heal",
+      "schedule": "*/10 * * * *"
+    },
+    {
+      "path": "/api/cron/watchdog",
+      "schedule": "*/15 * * * *"
+    },
+    {
+      "path": "/api/cron/trending",
+      "schedule": "*/30 * * * *"
+    },
+    {
+      "path": "/api/cron/expire",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/price-alerts",
+      "schedule": "15 * * * *"
+    },
+    {
+      "path": "/api/cron/cart-recovery",
+      "schedule": "30 * * * *"
+    },
+    {
+      "path": "/api/cron/notify-retry",
+      "schedule": "45 * * * *"
+    },
+    {
+      "path": "/api/cron/supplier",
+      "schedule": "30 20 * * *"
+    },
+    {
+      "path": "/api/cron/digest",
+      "schedule": "30 2 * * *"
+    },
+    {
+      "path": "/api/cron/subscription",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/telegram-sweep",
+      "schedule": "*/5 * * * *"
+    },
+    {
+      "path": "/api/cron/storage-sweep",
+      "schedule": "0 4 * * *"
+    }
+  ]
+}

@@ -1,0 +1,57 @@
+# Environment — NEVER commit
+.env
+.env.local
+.env.production
+.env.development
+.env*.local
+*.pem
+*.key
+secrets/
+
+# Dependencies
+node_modules/
+
+# Build artifacts
+.next/
+out/
+.turbo/
+dist/
+build/
+
+# Cache & temp
+.cache/
+*.log
+.pid
+*.tmp
+*.tsbuildinfo
+*.yarn
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# WhatsApp worker sessions — NEVER commit
+worker/.wa-session/
+worker/node_modules/
+worker/.env
+
+# AI/editor
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.core_pid
+
+# OS
+*~
+.fuse_hidden*
+.Directory
+.Trash-*
+.nfs*
+.nyc_output/
+coverage/
+backups/

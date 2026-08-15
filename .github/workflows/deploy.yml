@@ -1,0 +1,30 @@
+name: Deploy
+
+on:
+  push: { branches: [main] }
+
+jobs:
+  deploy-vercel:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Deploy to Vercel
+        run: npx vercel@latest deploy --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
+        env:
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+
+      - name: Verify live health
+        run: |
+          sleep 15
+          curl -fsS https://matzhub.com/api/health || exit 1

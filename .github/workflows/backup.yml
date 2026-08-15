@@ -1,0 +1,62 @@
+name: Database backup
+
+# Nightly logical backup of the production database.
+#
+# Runs on GitHub Actions rather than a Vercel cron because Vercel functions
+# cannot execute pg_dump, and the approved architecture has no VPS to run it on.
+#
+# Captures every table in one file: channel mappings, categories, settings,
+# products, suppliers and the subscription anchor. Restore with:
+#   psql "$DATABASE_URL" < matzhub_db_<timestamp>.sql
+#
+# Requires the DATABASE_URL repository secret.
+
+on:
+  schedule:
+    - cron: "0 3 * * *" # 03:00 UTC daily
+  workflow_dispatch: {}
+
+jobs:
+  dump:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail fast when the secret is absent
+        run: |
+          if [ -z "${{ secrets.DATABASE_URL }}" ]; then
+            echo "DATABASE_URL secret is not set — backups are NOT running."
+            exit 1
+          fi
+
+      - name: Install a client matching the server major version
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo gpg --dearmor -o /etc/apt/trusted.gpg.d/pgdg.gpg
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq postgresql-client-16
+
+      - name: Dump
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          TS=$(date -u +%Y%m%d_%H%M%S)
+          mkdir -p backups
+          pg_dump --no-owner --clean --if-exists "$DATABASE_URL" > "backups/matzhub_db_${TS}.sql"
+          # A dump that lost the operational tables is worse than no dump,
+          # because it would restore an empty configuration over a live one.
+          for t in categories manufacturers settings products; do
+            grep -q "CREATE TABLE public.${t}" "backups/matzhub_db_${TS}.sql" \
+              || { echo "Backup is missing table ${t} — refusing to publish it."; exit 1; }
+          done
+          gzip "backups/matzhub_db_${TS}.sql"
+          ls -la backups/
+          echo "STAMP=${TS}" >> "$GITHUB_ENV"
+
+      - name: Retain for 30 days
+        uses: actions/upload-artifact@v4
+        with:
+          name: matzhub-db-${{ env.STAMP }}
+          path: backups/*.sql.gz
+          retention-days: 30

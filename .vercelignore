@@ -1,0 +1,14 @@
+# The WhatsApp worker is a persistent process that runs elsewhere. Its session
+# directory holds live authentication state and must never be uploaded to a
+# serverless deployment.
+worker/
+
+# Secrets live in Vercel's encrypted environment, never in the bundle.
+.env
+.env.*
+!.env.example
+
+backups/
+*.log
+.next/
+node_modules/

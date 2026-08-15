@@ -1,0 +1,9 @@
+# The live WhatsApp session must never enter an image layer. Baking it in
+# would publish credentials to the registry and restore a stale session over a
+# healthy one on redeploy. It is mounted at /data instead.
+.wa-session/
+.env
+node_modules/
+npm-debug.log*
+*.log
+probe-history.mjs
