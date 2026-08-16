@@ -28,10 +28,23 @@ Telegram    ──►  admin + dev bots  →  Vercel webhooks  →  worker contr
 | DNS / TLS            | Cloudflare (DNS-only apex)       | Vercel terminates TLS; do NOT proxy the apex.       |
 | CI + backups         | GitHub Actions                   | Typecheck, lint, tests, build, nightly `pg_dump`.   |
 
+<<<<<<< HEAD
 **What is not part of the architecture:** DigitalOcean droplets,
 Railway, Render, a developer laptop, a Codespace, `docker compose up`, or any
 "just run `node whatsapp-worker.mjs` locally" story. If you see instructions
 pointing at any of those in older README revisions, ignore them.
+=======
+**What is not part of the architecture:** DigitalOcean droplets, Railway,
+Render, a developer laptop, a Codespace, `docker compose up`, or any
+"just run `node whatsapp-worker.mjs` locally" story. If you see instructions
+pointing at any of those in older README revisions, ignore them.
+
+**EC2 runs ONE thing:** the persistent WhatsApp worker described in section 4.
+It never runs the Next.js app, never runs cron, and never runs Postgres —
+those are Vercel and Supabase workloads. The worker is a single Docker
+container (`worker/Dockerfile`) with its session directory mounted on a
+persistent EBS volume.
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 
 ---
 
@@ -57,7 +70,11 @@ Required:
 
 Required once the worker is deployed:
 
+<<<<<<< HEAD
 - `WA_WORKER_URL` — the public URL of the worker (e.g. `https://matzhub-worker.fly.dev`)
+=======
+- `WA_WORKER_URL` — the public URL of the worker (e.g. `http://<EC2-IP>:8081`)
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 - `WA_WORKER_TOKEN` — must equal `WA_WORKER_TOKEN` on the worker side
 
 Optional (see `.env.example` for the full list and their effect if unset):
@@ -137,6 +154,7 @@ It **cannot** run on Vercel, Cloudflare Workers, or GitHub Actions cron — thos
 runtimes tear the process down and the session is lost. That is a WhatsApp
 protocol constraint, not a MatzHub design choice.
 
+<<<<<<< HEAD
 The only production-appropriate hosts are ones that give you a long-lived, persistent Node runtime with storage that survives process restarts. **Pick one** (do not run two):
 
 - **AWS EC2 (Recommended VM)** — Perfect for running the worker 24/7. An Amazon Linux / Ubuntu `t2.micro` or `t3.micro` instance (free tier) is exceptionally robust. You can run the worker directly under `pm2` (with auto-restart and system boot recovery) or via Docker.
@@ -216,12 +234,80 @@ EC2 provides a highly resilient, isolated virtual machine. By setting up the wor
    ```
 
 ### Deploy to Fly.io (canonical example)
+=======
+The only production-appropriate hosts are ones that give you a long-lived Node
+container with mounted storage. **Pick one** (do not run two):
+
+- **AWS EC2 — canonical.** One t2.micro (free tier) or t3.micro. The
+  `worker/Dockerfile` already targets this shape (exposes 8081, mounts
+  `/data`, healthchecks `/health`). Docker + systemd restarts the container
+  automatically on reboot or crash; the EBS volume survives both.
+- Fly.io (alternative) — `worker/fly.toml` is provided; `auto_stop_machines`
+  must stay `false` so Baileys never sleeps.
+- Any other host that runs a Docker image and gives you a persistent volume.
+
+### Deploy to EC2 (canonical)
+
+1. Launch an instance (Amazon Linux 2023 or Ubuntu 22.04+), t2.micro/t3.micro,
+   20–30 GB gp3 root volume. Add a second 5 GB gp3 volume mounted at
+   `/var/lib/matzhub-worker` (or use a Docker named volume — EBS survives
+   instance reboots, a named volume survives container restarts but not
+   instance replacement; EBS is the stronger guarantee).
+2. Security group: open **TCP 8081 only to your own IP** (Telegram never
+   calls the worker directly — the Vercel app and your admin commands do).
+   Do NOT expose 8081 to 0.0.0.0/0.
+3. Install Docker:
+   ```bash
+   sudo dnf install -y docker && sudo systemctl enable --now docker
+   ```
+4. Build and run:
+   ```bash
+   cd worker
+   sudo docker build -t matzhub-worker .
+   sudo docker run -d --name matzhub-worker \
+     --restart unless-stopped \
+     -v matzhub-wa-data:/data \
+     -p 8081:8081 \
+     --env-file .env \
+     matzhub-worker
+   ```
+   `.env` on the server holds the same variables as `worker/.env.example`,
+   filled with real values: `MATZHUB_API_URL`, `INGEST_TOKEN`,
+   `WA_WORKER_TOKEN`, `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`,
+   `SUPABASE_BUCKET`, `SUPABASE_VIDEO_BUCKET`, plus optional
+   `TELEGRAM_ADMIN_BOT_TOKEN`/`TELEGRAM_ADMIN_CHAT_ID` (worker crash
+   escalation), `SUPPLIER_INGESTION_NUMBER`, `WA_GROUPS`, `WA_PAIRING_NUMBER`.
+5. Restart/recovery safety — verified behaviour of this image:
+   - `--restart unless-stopped`: container comes back after reboot or crash.
+   - The session lives on the mounted volume at `/data/.wa-session` AND is
+     backed up to Supabase Storage (`wa-sessions/primary/*`) on every
+     successful connect and on SIGTERM. If the instance itself is replaced,
+     a fresh container restores the session from Supabase on boot — no QR.
+   - SIGTERM handler uploads the session before exit; the container then
+     restarts cleanly. No QR is minted unless the stored session is invalid.
+   - Verify after any restart:
+     ```bash
+     curl -fsS http://localhost:8081/health   # 200 + "status":"connected"
+     ```
+6. Zero-downtime redeploys of the worker image:
+   ```bash
+   sudo docker pull ... # or rebuild
+   sudo docker stop matzhub-worker && sudo docker rm matzhub-worker
+   sudo docker run -d --name matzhub-worker ... (same command as step 4)
+   ```
+   Session survives because the volume and the Supabase backup are untouched.
+
+### Alternative: Fly.io
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 
 ```bash
 cd worker
 fly launch --no-deploy --name matzhub-worker --region <region>
 fly volumes create wa_session --size 1 --region <region>
+<<<<<<< HEAD
 # Mount the volume at /data and expose 8081 (fly.toml example below).
+=======
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 fly secrets set \
   MATZHUB_API_URL=https://matzhub.com \
   INGEST_TOKEN=<same as Vercel> \
@@ -234,6 +320,7 @@ fly secrets set \
 fly deploy
 ```
 
+<<<<<<< HEAD
 Minimum `fly.toml`:
 
 ```toml
@@ -272,6 +359,14 @@ primary_region = "<region>"
 After deploy, set on Vercel:
 
 - `WA_WORKER_URL=https://matzhub-worker.fly.dev`
+=======
+The checked-in `worker/fly.toml` has `auto_stop_machines = false` and
+`min_machines_running = 1` — required so Baileys keeps its socket.
+
+After deploy, set on Vercel:
+
+- `WA_WORKER_URL=http://<EC2-INSTANCE-IP>:8081` (or your domain once TLS is set up)
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 - `WA_WORKER_TOKEN=<same value as the worker>`
 
 Then in Telegram (admin bot): `/worker` shows connection state, `/qr` returns
@@ -283,7 +378,12 @@ pairing.
 The very first boot has no session in `wa-sessions/`, so the worker emits a QR.
 Options:
 
+<<<<<<< HEAD
 1. Fly SSH: `fly ssh console -C 'cat /data/.wa-session/whatsapp-qr.png' > qr.png`
+=======
+1. SSH: `ssh ec2-user@<INSTANCE-IP> 'sudo cat /var/lib/docker/volumes/matzhub-wa-data/_data/.wa-session/whatsapp-qr.png' > qr.png`
+   (or `sudo docker cp matzhub-worker:/data/.wa-session/whatsapp-qr.png ./qr.png`)
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 2. Telegram: `/qr` returns the same PNG.
 3. Pairing code: set `WA_PAIRING_NUMBER=91XXXXXXXXXX`; the worker prints an
    8-digit code to enter under WhatsApp → Linked Devices → Link with phone.
@@ -336,7 +436,11 @@ If any of these fail, `OPS.md` → "Diagnosing" covers each one.
 ## What is NOT required
 
 - **No local machine 24/7.** The Vercel app is stateless; the worker runs on
+<<<<<<< HEAD
   Fly.io (or equivalent); Supabase holds all state; Cloudflare + Vercel serve
+=======
+  EC2 (or Fly.io); Supabase holds all state; Cloudflare + Vercel serve
+>>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
   the edge. Turning off your laptop changes nothing in production.
 - **No docker-compose in production.** Compose is dev-only convenience and is
   not shipped in this repo.
