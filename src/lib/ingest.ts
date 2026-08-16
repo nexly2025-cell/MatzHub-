@@ -394,6 +394,19 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     },
   });
 
+  const notificationPayload = {
+    title: enrichment.title,
+    slug: created.slug,
+    quality: enrichment.qualityScore,
+    confidence: Math.round(enrichment.confidence * 100),
+    id: created.id,
+    supplierName: mfr.name,
+    groupName: msg.groupName || mfr.sourceGroupName || "Direct Group",
+    groupId: msg.groupId || mfr.sourceGroupId || "N/A",
+    receivedAt: new Date().toISOString(),
+    messageId: msg.messageId,
+  };
+
   if (!autoOk) {
     await db.insert(notifications).values({
       channel: "telegram",
@@ -401,11 +414,8 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       recipient: "ops",
       template: "moderation_needed",
       payload: {
-        title: enrichment.title,
-        quality: enrichment.qualityScore,
-        confidence: Math.round(enrichment.confidence * 100),
+        ...notificationPayload,
         reason: enrichment.qualityScore < 55 ? "quality below threshold" : "confidence below threshold",
-        id: created.id,
       },
     });
     await db.insert(opsTasks).values({
@@ -416,6 +426,14 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       entityType: "product",
       entityId: created.id,
       actionUrl: `/admin/moderation`,
+    });
+  } else {
+    await db.insert(notifications).values({
+      channel: "telegram",
+      audience: "ops",
+      recipient: "ops",
+      template: "product_auto_published",
+      payload: notificationPayload,
     });
   }
 

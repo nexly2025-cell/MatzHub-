@@ -583,6 +583,7 @@ export const telegramEphemeral = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     chatId: text("chat_id").notNull(),
     messageId: integer("message_id").notNull(),
+    bot: text("bot").notNull().default("admin"), // "admin" | "dev"
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

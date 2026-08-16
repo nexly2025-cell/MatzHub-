@@ -789,14 +789,24 @@ process.on("uncaughtException", (e) => log("uncaught_exception", { error: e.mess
 log("starting", { api: CONFIG.apiUrl, session: CONFIG.sessionDir });
 void safeStart("boot");
 
-// If running as a scheduled job, stop after a short period and back up session.
-const RUN_MS = Number(process.env.WA_RUN_MS || 15 * 60 * 1000); // default 15 minutes
-setTimeout(async () => {
-  try {
-    log("scheduled_shutdown", { runMs: RUN_MS });
-    await sessionStore.uploadCreds(log);
-  } catch (e) {
-    log("session_backup_uncaught", { error: String(e) });
-  }
-  process.exit(0);
-}, RUN_MS + 5000);
+// This worker is designed to run continuously. The previous WA_RUN_MS
+// "scheduled shutdown" (default 15 minutes) was an artefact of an obsolete
+// GitHub Actions cron path that tried to host Baileys inside a scheduled job —
+// that architecture has been removed. Baileys requires a persistent socket;
+// tearing it down every 15 minutes causes rate limits, missed messages, and
+// the exact "PROCESS = STOPPED" symptom observed in production.
+//
+// Graceful shutdown on SIGTERM/SIGINT still uploads the session first so the
+// next instance restores it from Supabase Storage without a fresh QR scan.
+for (const signal of ["SIGTERM", "SIGINT"]) {
+  process.on(signal, async () => {
+    try {
+      log("shutdown", { signal });
+      await sessionStore.uploadCreds(log);
+    } catch (e) {
+      log("session_backup_uncaught", { error: String(e) });
+    } finally {
+      process.exit(0);
+    }
+  });
+}

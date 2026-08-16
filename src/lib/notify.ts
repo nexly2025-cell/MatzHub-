@@ -87,12 +87,35 @@ export function render(template: string, p: Payload): string {
 
     case "moderation_needed":
       return [
-        `*Review needed*: ${s(p, "title")}`,
+        `🟢 *Review needed*: ${s(p, "title")}`,
         ``,
-        `quality ${n(p, "quality")}/100 · confidence ${n(p, "confidence")}%`,
-        `reason: ${s(p, "reason")}`,
+        `*Supplier:* ${s(p, "supplierName", "Unknown")}`,
+        `*Group:* ${s(p, "groupName", "Unknown")} (${s(p, "groupId", "Unknown")})`,
+        `*Received:* ${s(p, "receivedAt", "Unknown")}`,
+        `*Message Ref:* \`${s(p, "messageId", "Unknown")}\``,
         ``,
-        `${SITE.url}/admin/moderation`,
+        `*AI Metrics:*`,
+        `• Quality: ${n(p, "quality")}/100`,
+        `• Confidence: ${n(p, "confidence")}%`,
+        `• Reason: ${s(p, "reason")}`,
+        ``,
+        `🔗 ${SITE.url}/admin/moderation`,
+      ].join("\n");
+
+    case "product_auto_published":
+      return [
+        `✅ *Auto-Published*: ${s(p, "title")}`,
+        ``,
+        `*Supplier:* ${s(p, "supplierName", "Unknown")}`,
+        `*Group:* ${s(p, "groupName", "Unknown")} (${s(p, "groupId", "Unknown")})`,
+        `*Received:* ${s(p, "receivedAt", "Unknown")}`,
+        `*Message Ref:* \`${s(p, "messageId", "Unknown")}\``,
+        ``,
+        `*AI Metrics:*`,
+        `• Quality: ${n(p, "quality")}/100`,
+        `• Confidence: ${n(p, "confidence")}%`,
+        ``,
+        `🔗 ${SITE.url}/p/${s(p, "slug")}`,
       ].join("\n");
 
     case "order_fulfilment": {

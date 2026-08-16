@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq, lte } from "drizzle-orm";
+import { eq, lte, and } from "drizzle-orm";
 import { db } from "@/db";
 import { settings, telegramEphemeral } from "@/db/schema";
 import { keyboardFor, lookupSku, parseCommand, runCommand, SKU_PATTERN, type Button } from "@/lib/telegram";
@@ -186,12 +186,13 @@ const EPHEMERAL_TTL_MS = 5 * 60 * 1000;
  * messages leaked permanently. QR photos were never queued at all, which is
  * why images accumulated in the chat.
  */
-async function expireLater(chatId: string, messageIds: Array<number | null | undefined>) {
+async function expireLater(bot: BotKind, chatId: string, messageIds: Array<number | null | undefined>) {
   const rows = messageIds
     .filter((n): n is number => typeof n === "number" && Number.isFinite(n))
     .map((messageId) => ({
       chatId,
       messageId,
+      bot,
       expiresAt: new Date(Date.now() + EPHEMERAL_TTL_MS),
     }));
   if (!rows.length) return;
@@ -205,7 +206,7 @@ async function expireLater(chatId: string, messageIds: Array<number | null | und
  * operator removed by hand, or one older than Telegram's 48-hour deletion
  * window, must not be retried forever.
  */
-export async function sweepExpiredMessages(bot: BotKind = "admin"): Promise<number> {
+export async function sweepExpiredMessages(): Promise<number> {
   const due = await db
     .select()
     .from(telegramEphemeral)
@@ -214,7 +215,8 @@ export async function sweepExpiredMessages(bot: BotKind = "admin"): Promise<numb
 
   let deleted = 0;
   for (const row of due) {
-    await deleteMessage(bot, row.chatId, row.messageId);
+    const rowBot = (row.bot as BotKind) || "admin";
+    await deleteMessage(rowBot, row.chatId, row.messageId);
     await db.delete(telegramEphemeral).where(eq(telegramEphemeral.id, row.id));
     deleted += 1;
   }
@@ -226,7 +228,10 @@ export async function sweepExpiredMessages(bot: BotKind = "admin"): Promise<numb
  * buttons in a row never stacks two status messages.
  */
 async function sweepChatNow(bot: BotKind, chatId: string) {
-  const rows = await db.select().from(telegramEphemeral).where(eq(telegramEphemeral.chatId, chatId));
+  const rows = await db
+    .select()
+    .from(telegramEphemeral)
+    .where(and(eq(telegramEphemeral.chatId, chatId), eq(telegramEphemeral.bot, bot)));
   for (const row of rows) {
     await deleteMessage(bot, chatId, row.messageId);
     await db.delete(telegramEphemeral).where(eq(telegramEphemeral.id, row.id));
@@ -292,7 +297,7 @@ export async function handleUpdate(request: Request, bot: BotKind) {
         // and the controlling message explains what to do with it. The photo
         // is queued for deletion — a scanned or expired code is pure clutter.
         const photoId = await sendPhoto(bot, chat, reply.photoBase64, reply.text);
-        await expireLater(chat, [photoId]);
+        await expireLater(bot, chat, [photoId]);
         if (!pressedOnPanel) {
           await editMessage(bot, chat, cbMsgId, "*Pairing code sent above.*\nIt expires in about 60 seconds.", keyboardFor("m:wa"));
         }
@@ -304,11 +309,11 @@ export async function handleUpdate(request: Request, bot: BotKind) {
         // Clear the previous working message so only one is ever open.
         await sweepChatNow(bot, chat);
         const sent = await send(bot, chat, reply.text, reply.keyboard ?? keyboardBack());
-        await expireLater(chat, [sent]);
+        await expireLater(bot, chat, [sent]);
       } else {
         await editMessage(bot, chat, cbMsgId, reply.text, reply.keyboard ?? keyboardBack());
         // Keep the working message on the deletion clock as it is reused.
-        await expireLater(chat, [cbMsgId]);
+        await expireLater(bot, chat, [cbMsgId]);
       }
     } catch (e) {
       // Failures are never ephemeral: they are the record of what went wrong.
@@ -363,7 +368,7 @@ export async function handleUpdate(request: Request, bot: BotKind) {
     // Queue routine output and the command that produced it. Photos are always
     // queued regardless of the ephemeral flag: a stale QR is never useful.
     if (reply.ephemeral || reply.photoBase64) {
-      await expireLater(chat, [sent, msg?.message_id]);
+      await expireLater(bot, chat, [sent, msg?.message_id]);
     }
   } catch (e) {
     await send(bot, chat, `Command failed:\n\`${e instanceof Error ? e.message : "unknown error"}\``);

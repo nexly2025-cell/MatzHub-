@@ -4,7 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { getWishlist, subscribe, anonId } from "@/lib/client-store";
+import { getWishlist, subscribe, anonId, getCart } from "@/lib/client-store";
 
 const NAV = [
   { href: "/", label: "Home" },
@@ -31,6 +31,7 @@ const ICONS = {
   heart: "M20.8 5.6a5 5 0 00-7.1 0L12 7.3l-1.7-1.7a5 5 0 10-7.1 7.1L12 21.5l8.8-8.8a5 5 0 000-7.1z",
   x: "M6 6l12 12M18 6L6 18",
   track: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zm0-5v-4m0-4h.01",
+  cart: "M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4H6z M3 6h18 M16 10a4 4 0 01-8 0",
 };
 
 type Suggestion = { slug: string; title: string; price: number; image: string };
@@ -43,6 +44,7 @@ export default function Header() {
   const [searchOpen, setSearchOpen] = useState(false);
   const [q, setQ] = useState("");
   const [wish, setWish] = useState(0);
+  const [cartCount, setCartCount] = useState(0);
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
   const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -51,6 +53,9 @@ export default function Header() {
     const sync = () => {
       anonId();
       setWish(getWishlist().length);
+      const cart = getCart();
+      const count = cart.reduce((acc, item) => acc + item.qty, 0);
+      setCartCount(count);
     };
     sync();
     const unsub = subscribe(sync);
@@ -159,6 +164,10 @@ export default function Header() {
             <Link href="/wishlist" aria-label={`Wishlist, ${wish} items`} className="relative grid h-10 w-10 place-items-center rounded-full text-ink hover:bg-surface-2">
               <Icon d={ICONS.heart} />
               {wish > 0 && <Badge n={wish} />}
+            </Link>
+            <Link href="/cart" aria-label={`Cart, ${cartCount} items`} className="relative grid h-10 w-10 place-items-center rounded-full text-ink hover:bg-surface-2">
+              <Icon d={ICONS.cart} />
+              {cartCount > 0 && <Badge n={cartCount} />}
             </Link>
             <ThemePicker />
           </div>

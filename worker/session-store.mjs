@@ -1,7 +1,13 @@
 /**
- * Persists the Baileys auth session directory to Supabase Storage so a container
- * restart does NOT demand a fresh QR scan.
- * Bucket: wa-sessions (private). Path: primary/<session-file>
+ * Persists the Baileys auth session directory to Supabase Storage so a
+ * container restart or redeploy does NOT demand a fresh QR scan.
+ *
+ * Bucket: wa-sessions (private, service-role access only)
+ * Path:   primary/<session-file>
+ *
+ * This is the ONLY persistent-state mechanism for the WhatsApp session.
+ * Do not add a second (local disk survives inside a container, but not across
+ * redeploys; Supabase Storage is the source of truth).
  */
 
 const SUPABASE_URL = process.env.SUPABASE_URL || "";
@@ -89,12 +95,19 @@ export async function restoreCreds(log) {
     const sessionDir = process.env.WA_SESSION_DIR || ".wa-session";
     if (fs.existsSync(sessionDir) && (await fsp.readdir(sessionDir)).length) return true;
 
-    const listUrl = new URL(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`);
-    listUrl.searchParams.set("prefix", `${PREFIX}/`);
-    const listRes = await fetch(listUrl.toString(), {
-      headers: { Authorization: `Bearer ${SUPABASE_KEY}` },
+    // Supabase Storage list is a POST with a JSON body. A GET returns 404.
+    const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${SUPABASE_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ prefix: `${PREFIX}/`, limit: 1000 }),
     });
-    if (!listRes.ok) return false;
+    if (!listRes.ok) {
+      log("session_list_failed", { status: listRes.status });
+      return false;
+    }
     const list = await listRes.json();
     const items = Array.isArray(list) ? list : list?.data || [];
     if (!items.length) return false;
@@ -103,9 +116,12 @@ export async function restoreCreds(log) {
     let restored = 0;
     let bytes = 0;
     for (const item of items) {
-      const objectPath = item.name || item.path || item.id;
-      if (!objectPath || !objectPath.startsWith(`${PREFIX}/`)) continue;
+      // Supabase returns names relative to the prefix argument, so we prepend PREFIX.
+      const objectName = item.name || item.path || item.id;
+      if (!objectName) continue;
+      const objectPath = objectName.startsWith(`${PREFIX}/`) ? objectName : `${PREFIX}/${objectName}`;
       const relativePath = objectPath.slice(PREFIX.length + 1);
+      if (!relativePath) continue;
       const filePath = path.join(sessionDir, relativePath);
       await fsp.mkdir(path.dirname(filePath), { recursive: true });
       const res = await fetch(`${SUPABASE_URL}/${encodeObjectPath([objectPath])}`, {
@@ -139,22 +155,27 @@ export async function restoreCreds(log) {
 export async function purgeRemote(log) {
   if (!enabled()) return { purged: 0, skipped: "storage not configured" };
   try {
-    const listUrl = new URL(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`);
-    const listRes = await fetch(listUrl.toString(), {
+    const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ prefix: `${PREFIX}/`, limit: 1000 }),
     });
     if (!listRes.ok) return { purged: 0, error: `list ${listRes.status}` };
 
     const list = await listRes.json();
     const items = Array.isArray(list) ? list : list?.data || [];
-    const names = items.map((i) => `${PREFIX}/${i.name}`).filter(Boolean);
+    const names = items
+      .map((i) => {
+        const n = i.name || i.path || i.id;
+        if (!n) return null;
+        return n.startsWith(`${PREFIX}/`) ? n : `${PREFIX}/${n}`;
+      })
+      .filter(Boolean);
     if (!names.length) return { purged: 0 };
 
     const delRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${SERVICE_KEY}`, "Content-Type": "application/json" },
+      headers: { Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
       body: JSON.stringify({ prefixes: names }),
     });
     if (!delRes.ok) return { purged: 0, error: `delete ${delRes.status}` };

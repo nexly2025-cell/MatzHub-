@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getWishlist, pushRecent, subscribe, toggleWishlist, track } from "@/lib/client-store";
+import { getWishlist, pushRecent, subscribe, toggleWishlist, track, addToCart } from "@/lib/client-store";
 import { SITE, inr, savePercent, waLink } from "@/lib/utils";
 
 type P = {
@@ -36,6 +36,24 @@ export default function BuyBox({
   const [alertOpen, setAlertOpen] = useState(false);
   const [alertPrice, setAlertPrice] = useState(Math.round(p.price * 0.85));
   const [alertDone, setAlertDone] = useState(false);
+  const [addedSuccess, setAddedSuccess] = useState(false);
+
+  const handleAddToCart = () => {
+    addToCart({
+      id: p.id,
+      slug: p.slug,
+      title: p.title,
+      image: p.heroImage,
+      price: p.price,
+      mrp: p.mrp,
+      variant: variant || undefined,
+      qty,
+      sku: p.sku
+    });
+    setAddedSuccess(true);
+    track("add_to_cart", { productId: p.id, value: p.price * qty });
+    setTimeout(() => setAddedSuccess(false), 3000);
+  };
 
   const off = savePercent(p.mrp, p.price);
   const soldOut = p.availability === "out_of_stock";
@@ -139,11 +157,18 @@ export default function BuyBox({
           </div>
         </div>
 
-        {/* Orders are placed in conversation, not on the site. There is no
-            cart and no checkout: Buy opens WhatsApp with the piece, variant,
-            quantity and SKU pre-filled so the customer never retypes it. */}
+        {/* Dual Actions: Add to Cart (multi-item orders) & Buy on WhatsApp (instant single-item checkouts) */}
+        <button
+          type="button"
+          onClick={handleAddToCart}
+          disabled={soldOut}
+          className="btn btn-solid mt-4 w-full bg-ink text-oninverse hover:opacity-90"
+        >
+          {addedSuccess ? "✓ Added to Cart!" : "Add to Cart"}
+        </button>
+
         <a
-          className="btn btn-whatsapp mt-4 w-full"
+          className="btn btn-whatsapp mt-2 w-full"
           href={waLink(`Hi MatzHub, I'd like to order:\n${p.title}${variant ? ` (${variant})` : ""}${qty > 1 ? ` x${qty}` : ""}\nSKU ${p.sku}\n${SITE.url}/p/${p.slug}`)}
           target="_blank"
           rel="noopener noreferrer"
@@ -212,14 +237,22 @@ export default function BuyBox({
       {/* mobile sticky CTA */}
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-line bg-canvas/96 px-4 py-3 backdrop-blur-xl pb-safe lg:hidden">
         <div className="mx-auto flex max-w-lg gap-2.5">
+          <button
+            type="button"
+            onClick={handleAddToCart}
+            disabled={soldOut}
+            className="btn btn-solid h-12 flex-1 text-[14px] bg-ink text-oninverse hover:opacity-90"
+          >
+            {addedSuccess ? "✓ Added" : "Add to Cart"}
+          </button>
           <a
-            className="btn btn-whatsapp h-12 flex-1 text-[15px]"
+            className="btn btn-whatsapp h-12 flex-1 text-[14px]"
             href={waLink(`Hi MatzHub, I'd like to order:\n${p.title}${variant ? ` (${variant})` : ""}${qty > 1 ? ` x${qty}` : ""}\nSKU ${p.sku}\n${SITE.url}/p/${p.slug}`)}
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => track("whatsapp_order", { productId: p.id, value: p.price * qty })}
           >
-            {soldOut ? "Ask about availability" : "Buy on WhatsApp"}
+            {soldOut ? "Ask availability" : "Buy on WhatsApp"}
           </a>
         </div>
       </div>

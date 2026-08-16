@@ -1,10 +1,35 @@
 name: Deploy
 
+# Optional. When the repo is connected to Vercel via the GitHub App
+# (the default), Vercel builds and deploys every push on its own and this
+# workflow does nothing — a second `vercel deploy` on top of that would either
+# fail on the duplicate SHA or waste build minutes rebuilding an identical
+# artifact.
+#
+# This workflow only runs when a VERCEL_TOKEN repository secret is present,
+# which is the explicit opt-in for teams that prefer CLI-driven deploys over
+# the Git integration. Remove the secret to fall back to the GitHub App path.
+
 on:
-  push: { branches: [main] }
+  push:
+    branches: [main]
 
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      cli_deploy: ${{ steps.check.outputs.cli_deploy }}
+    steps:
+      - id: check
+        env:
+          TOKEN: ${{ secrets.VERCEL_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then echo "cli_deploy=true" >> "$GITHUB_OUTPUT";
+          else echo "cli_deploy=false" >> "$GITHUB_OUTPUT"; fi
+
   deploy-vercel:
+    needs: gate
+    if: needs.gate.outputs.cli_deploy == 'true'
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -16,15 +41,18 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run build
 
+      # `vercel deploy` runs the production build itself; running `npm run
+      # build` here as well only wastes minutes and can mask environment
+      # drift between the two build environments.
       - name: Deploy to Vercel
-        run: npx vercel@latest deploy --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
         env:
           VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
           VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: npx vercel@latest deploy --prod --yes --token ${{ secrets.VERCEL_TOKEN }}
 
       - name: Verify live health
         run: |
-          sleep 15
-          curl -fsS https://matzhub.com/api/health || exit 1
+          sleep 20
+          curl -fsS https://matzhub.com/api/health
+          curl -fsS https://matzhub.com/api/readiness

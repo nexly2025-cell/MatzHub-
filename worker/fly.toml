@@ -1,0 +1,56 @@
+# MatzHub WhatsApp worker — Fly.io deployment manifest.
+#
+# This is the canonical persistent-Node host. Any other Docker platform (Render,
+# Northflank, Koyeb, …) works the same way: build the Dockerfile, mount a
+# volume at /data, expose 8081, healthcheck /health. Pick ONE host — running
+# two copies of this worker would fight for the same WhatsApp session.
+#
+# One-off setup, from the worker/ directory:
+#     fly launch --no-deploy --name matzhub-worker --region <region>
+#     fly volumes create wa_session --size 1 --region <region>
+#     fly secrets set MATZHUB_API_URL=... INGEST_TOKEN=... WA_WORKER_TOKEN=...
+#                     SUPABASE_URL=... SUPABASE_SERVICE_ROLE_KEY=...
+#     fly deploy
+
+app            = "matzhub-worker"
+primary_region = "bom"   # change to your closest region
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  # /data is the mounted volume; the session survives container restarts.
+  # Supabase Storage is still the source of truth across redeploys.
+  WA_SESSION_DIR = "/data/.wa-session"
+  WA_WORKER_PORT = "8081"
+
+[mounts]
+  source      = "wa_session"
+  destination = "/data"
+
+[[services]]
+  internal_port = 8081
+  protocol      = "tcp"
+  # Baileys keeps a persistent WebSocket. Never scale this to zero; auto-stop
+  # would tear down the socket and force a reconnect (and occasionally a
+  # rate-limit) every wake-up.
+  auto_stop_machines  = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[services.ports]]
+    port     = 443
+    handlers = ["tls", "http"]
+
+  [[services.ports]]
+    port     = 80
+    handlers = ["http"]
+
+  [services.http_checks]
+    interval      = "30s"
+    grace_period  = "40s"
+    method        = "GET"
+    path          = "/health"
+    protocol      = "http"
+    timeout       = "5s"
+    tls_skip_verify = false

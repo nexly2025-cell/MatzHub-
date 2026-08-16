@@ -1,271 +1,274 @@
-# Operations
+# MatzHub — Operations
 
-Everything you need to run, deploy, back up and recover. One file. Nothing else.
+Day-to-day runbook. First-time deployment lives in `DEPLOYMENT.md`; this file
+assumes production is already up.
 
-## Run it (first time — clean clone)
+Architecture in one sentence: **Vercel serves the app + APIs + cron, a
+persistent Node worker (AWS EC2 / Fly.io / any Docker host) holds the Baileys WhatsApp
+socket, Supabase is the database and storage, Cloudflare is DNS/TLS at the
+edge, Telegram is the operator control plane, and GitHub Actions handles CI +
+nightly backups.**
+
+Nothing in production depends on a laptop, Codespace, or `docker compose up`.
+
+---
+
+## Local development (only)
 
 ```bash
 git clone <repo>
-cd <repo>
+cd matzhub
 npm install
-npm run setup      # everything: node, packages, env, postgres, migrations, seed, probes
-npm start          # dev, hot reload
-# or:
-npm run build
-npm start          # production
-bash launch.sh worker        # whatsapp worker (QR once, or pairing code)
-bash launch.sh doctor        # diagnostics
-bash docker-compose up -d    # self-host, full stack including postgres
+cp .env.example .env       # fill in DATABASE_URL and ADMIN_PASSWORD at minimum
+npm run setup              # migrations, seed, probes
+npm run dev                # hot reload on :3000
+npm test                   # vitest
 ```
 
-If Postgres isn't running, `launch.sh` detects it in ≤20s and either starts the bundled one
-with `docker compose up -d db` or tells you exactly what to set.
+If you want to exercise WhatsApp ingestion locally, run the worker in a second
+terminal:
 
-## Telegram alerts — two people, two inboxes
-
-| Who | Gets | Why |
-|---|---|---|
-| `TELEGRAM_DEV_CHAT_ID` (you, developer) | automation failures, cron misses, worker version alerts, transport outages, security alerts | fix the platform |
-| `TELEGRAM_ADMIN_CHAT_ID` (admin) | new orders, risky orders, moderation additions, supplier health, daily digests | run the business |
-
-One bot token shared; override per-audience per-token optional:
-
-```
-TELEGRAM_BOT_TOKEN=…
-TELEGRAM_DEV_CHAT_ID=…
-TELEGRAM_ADMIN_CHAT_ID=…
-# optional split: TELEGRAM_DEV_BOT_TOKEN=…, TELEGRAM_ADMIN_BOT_TOKEN=…
+```bash
+cd worker && npm install && node whatsapp-worker.mjs
 ```
 
-Alerts are anti-spammed: identical template+recipient+payload fires at most once per 15 minutes.
+That worker is for local testing only. Production runs the same file, on
+AWS EC2 or Fly.io, permanently. See `DEPLOYMENT.md` → "WhatsApp worker".
+
+---
+
+## Telegram alerts — who hears what
+
+| Chat id                   | Receives                                                                                                | Purpose                     |
+| ------------------------- | ------------------------------------------------------------------------------------------------------- | --------------------------- |
+| `TELEGRAM_DEV_CHAT_ID`    | automation failures, cron misses, worker version alerts, transport outages, security alerts             | keep the platform healthy   |
+| `TELEGRAM_ADMIN_CHAT_ID`  | new orders, risky orders, moderation additions, supplier health, daily digests, subscription notices    | run the business            |
+
+Two independent bots (`TELEGRAM_ADMIN_BOT_TOKEN`, `TELEGRAM_DEV_BOT_TOKEN`),
+each with its own webhook URL (`/api/telegram/webhook`, `.../dev`). Role is
+decided by the webhook path, not the sender.
+
+Alerts are anti-spammed: identical (template, recipient, payload) fires at
+most once per 15 minutes.
+
+---
 
 ## Telegram Operations Center
-
-Inbound command bot. Webhook-based, so it costs nothing idle and needs no
-long-running process.
-
-### Setup
-
-```bash
-# 1. Create the bot with @BotFather, then:
-TELEGRAM_ADMIN_BOT_TOKEN=<token>
-TELEGRAM_ADMIN_CHAT_ID=<your numeric chat id>   # send /whoami to find it
-TELEGRAM_WEBHOOK_SECRET=$(openssl rand -hex 24)
-
-# 2. Point Telegram at the deployment (once per URL change):
-curl -X POST "https://api.telegram.org/bot$TELEGRAM_ADMIN_BOT_TOKEN/setWebhook" \
-  -H 'Content-Type: application/json' \
-  -d '{"url":"https://matzhub.com/api/telegram/webhook",
-       "secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'",
-       "allowed_updates":["message","callback_query"]}'
-```
-
-### Developer bot
-
-Telegram allows one webhook per bot and an update never says which bot received
-it, so each bot needs its own URL. Role is decided by the path, not the sender —
-a developer messaging the dev bot from any allowlisted account gets developer
-commands.
-
-```bash
-curl -X POST "https://api.telegram.org/bot$TELEGRAM_DEV_BOT_TOKEN/setWebhook" \
-  -H 'Content-Type: application/json' \
-  -d '{"url":"https://matzhub.com/api/telegram/webhook/dev",
-       "secret_token":"'"$TELEGRAM_DEV_WEBHOOK_SECRET"'",
-       "allowed_updates":["message","callback_query"]}'
-```
-
-| Route | Bot | Token | Allowlist |
-|---|---|---|---|
-| `/api/telegram/webhook` | admin | `TELEGRAM_ADMIN_BOT_TOKEN` | `TELEGRAM_ADMIN_CHAT_ID` |
-| `/api/telegram/webhook/dev` | developer | `TELEGRAM_DEV_BOT_TOKEN` | `TELEGRAM_DEV_CHAT_ID` |
-
-Dev commands: `/diag` `/jobs` `/run <job>` `/errors` `/worker` `/syncstatus`
-`/health` `/pause` `/resume` `/upload on|off` `/maintenance` `/backfill`.
-None of them appear on the admin bot.
 
 ### Security
 
 Two independent gates, both required:
 
-1. `X-Telegram-Bot-Api-Secret-Token` must equal `TELEGRAM_WEBHOOK_SECRET` —
-   proves the request came from Telegram, not the open internet.
-2. The sender's chat id must be in `TELEGRAM_ADMIN_CHAT_ID` /
-   `TELEGRAM_DEV_CHAT_ID`. With neither set the bot refuses everything.
+1. `X-Telegram-Bot-Api-Secret-Token` header must equal `TELEGRAM_WEBHOOK_SECRET`
+   (proves the caller is Telegram itself).
+2. Sender chat id must be in `TELEGRAM_ADMIN_CHAT_ID` / `TELEGRAM_DEV_CHAT_ID`.
+   No allowlist configured → the bot refuses everything (fail-closed).
 
-The endpoint always answers HTTP 200; Telegram retries non-2xx aggressively and
-a retry storm from an unauthorised caller is worse than a silent drop.
+The endpoint always returns HTTP 200; Telegram retries non-2xx aggressively,
+and a retry storm from an unauthorised caller is worse than a silent drop.
 
-### Commands
+### Admin commands
 
-| Command | Effect |
-|---|---|
-| `/help` | command list |
-| `/whoami` | prints your chat id |
-| `/health` | database reachability, catalogue counts, pause state |
-| `/stats` | products by status, order count and revenue |
-| `/tasks` | open items needing a human |
-| `/orders` | five most recent orders |
-| `/jobs` | every runnable job with its last run |
-| `/run <job>` | run one job now (rejects unknown names) |
-| `/heal` | shortcut for `/run self-heal` |
-| `/pause` `/resume` | kill switch for all scheduled jobs |
-| `/worker` | worker connection state and counters |
-| `/qr` | pairing QR — only if the session is actually invalid |
-| `/relink` | discard the session and force a fresh code |
-| `/groups` | groups the worker can currently see |
+| Command              | Effect                                                          |
+| -------------------- | --------------------------------------------------------------- |
+| `/help`              | command list                                                    |
+| `/whoami`            | prints your chat id                                             |
+| `/health`            | DB reachability, catalogue counts, pause state                  |
+| `/stats`             | products by status, order count, revenue                        |
+| `/tasks`             | open items needing a human                                      |
+| `/orders`            | five most recent orders                                         |
+| `/panel`             | persistent control panel                                        |
+| `/pause` / `/resume` | kill switch for all scheduled jobs                              |
+| `/worker`            | worker connection state + counters                              |
+| `/qr`                | pairing QR — only if the session is actually invalid            |
+| `/relink`            | discard the session and force a fresh code                      |
+| `/restart`           | ask the worker to reconnect (session is kept)                   |
+| `/channels`          | groups the worker can currently see                             |
 
-`/pause` writes `automation_paused=1` to `settings`; the cron runner checks it
-and returns `{skipped:"automation_paused"}`. `self-heal` stays runnable so a
-paused system can still be repaired.
+`/pause` writes `automation_paused=1` to `settings`; the cron runner returns
+`{skipped:"automation_paused"}` and `self-heal` remains runnable so a paused
+system can still be repaired.
 
-### WhatsApp pairing
+### Developer commands
 
-The worker never mints a QR on its own. It restores the stored session first
-and only emits a code when Baileys reports no valid credentials. On successful
-pair the QR is deleted from memory and disk and the session is pushed to
-Supabase, so restarts do not re-prompt.
+`/diag /jobs /run <job> /errors /worker /syncstatus /health /pause /resume
+/upload on|off /maintenance /backfill`. None of these appear on the admin bot.
 
-```
-/qr        -> "Already paired" if the session is valid, otherwise a scannable image
-/relink    -> clears the session (requires WA_WORKER_TOKEN on both sides)
-```
+---
 
-## WhatsApp linking
+## WhatsApp session
 
-Two ways to register the ingestion SIM, whichever works:
+The session is the one piece of state that cannot be regenerated
+automatically. Two places hold it:
 
-1. **QR** (default): run worker, scan the terminal QR or `.wa-session/whatsapp-qr.png`.
-2. **Pairing code** (if QR breaks in your environment): set `WA_PAIRING_NUMBER=91XXXXXXXXXX`
-   in the worker env; the worker prints an 8-digit code to enter in
-   WhatsApp → Linked Devices → Link with phone number.
+- **Container disk** at `/data/.wa-session` (mounted volume on the worker
+  host) — used at runtime.
+- **Supabase Storage** `wa-sessions/primary/*` — persistent, survives
+  redeploys, restored automatically on boot when the local disk is empty.
 
-Session persists to `./.wa-session` and re-uploads to Supabase (`wa-sessions` bucket) so
-a container restart doesn't rescan.
+Rules:
 
-## Deploy — no Vercel needed
+- The worker never mints a QR on its own. It restores the stored session
+  first and only emits a code when Baileys reports no valid credentials.
+- On a successful pair the QR is deleted from memory and disk and the session
+  is pushed to Supabase.
+- `/relink` is destructive: it wipes both local disk AND the Supabase copy.
+  Without the remote wipe the "removed" account silently reconnects on the
+  next boot.
 
-The canonical self-host path is Docker:
+Diagnosing "no QR ever appears": the session is valid and the worker is
+already connected — check `/worker` output. Diagnosing "asks for a QR every
+restart": `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` are missing on the
+worker so `session-store.mjs` cannot back up.
 
-```bash
-docker compose up -d            # platform + postgres + worker
-docker compose up -d db         # postgres only, if you keep app separate
-```
+### WhatsApp history
 
-Provide `.env` with real `DATABASE_URL` (if your compose DB is externally hosted),
-`ADMIN_PASSWORD`, `INGEST_TOKEN`, `CRON_SECRET`, `NEXT_PUBLIC_SITE_URL`, `SUPABASE_URL`, and
-`SUPABASE_SERVICE_ROLE_KEY`. That is the entire required set for a functioning
-**browsing + ingestion-first** deployment.
+WhatsApp pushes a device its message history exactly once, at link time. If
+the worker was linked while history sync was off, that payload is gone and
+the only recovery is re-pairing. The worker detects this automatically by
+inspecting `creds.processedHistoryMessages` and enables `syncFullHistory` for
+any session that has never received one.
 
-`vercel.json` exists only as a convenience for people who already use Vercel. It is not
-part of the required path.
-
-## Provisioning (Cloudflare + Vercel)
-
-One idempotent script configures DNS, TLS and the Vercel project. Dry run by
-default; nothing is written without `--apply`.
+Probe what the server actually sends without ingesting:
 
 ```bash
-export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=...
-export VERCEL_API_TOKEN=...    VERCEL_PROJECT_ID=... VERCEL_TEAM_ID=...
-npm run provision          # show the diff
-npm run provision:apply    # execute
+cd worker && node probe-history.mjs
 ```
 
-It sets the apex A record to Vercel's anycast IP and `www` to
-`cname.vercel-dns.com`, both **DNS-only**. Proxying the apex is deliberately
-avoided: Vercel terminates TLS and issues the certificate, and a second TLS hop
-through Cloudflare's proxy breaks issuance unless the zone runs Full (strict)
-with an origin certificate installed.
+Look for `history.set` batches. Zero batches with `neverSynced=true` means
+the session must be re-paired via `/relink`.
 
-TLS settings applied: Full, Always Use HTTPS, minimum TLS 1.2, TLS 1.3, 0-RTT,
-Brotli, HTTP/3, automatic HTTPS rewrites, and HSTS (2 years, includeSubDomains,
-preload). WAF and Ruleset changes are out of scope — they need permissions the
-deploy token does not carry, and silently failing security config is worse than
-none.
+---
 
-Secrets are never written by the script. It lists which ones are still missing
-from the Vercel project so they can be added in the dashboard.
+## Cron schedule (canonical)
 
-## Subscription (Cashfree)
-
-Operator billing. It gates exactly one thing: whether newly ingested products
-publish automatically.
-
-- Customers never see subscription state — no banner, no API field, nothing.
-- An expired subscription never removes, hides or de-lists published products.
-- Only future automatic uploads pause; the admin is told over Telegram.
+Configured in `vercel.json`. Vercel Cron hits each path with the platform's
+own scheduler token; the endpoint additionally requires `Authorization:
+Bearer $CRON_SECRET` (Vercel Cron injects it via the `CRON_SECRET` var). Do
+not duplicate the schedule anywhere else.
 
 ```
-CASHFREE_APP_ID=        CASHFREE_SECRET_KEY=        CASHFREE_ENV=sandbox|production
-Webhook URL: https://matzhub.com/api/payments/cashfree/webhook
+*/2  * * * *  /api/cron/notify
+*/5  * * * *  /api/cron/telegram-sweep
+*/10 * * * *  /api/cron/self-heal
+*/15 * * * *  /api/cron/watchdog
+*/30 * * * *  /api/cron/trending
+0    * * * *  /api/cron/expire
+15   * * * *  /api/cron/price-alerts
+30   * * * *  /api/cron/cart-recovery
+45   * * * *  /api/cron/notify-retry
+30 20 * * *   /api/cron/supplier
+30  2 * * *   /api/cron/digest
+0   9 * * *   /api/cron/subscription
+0   4 * * *   /api/cron/storage-sweep
 ```
 
-Signature is `base64(HMAC-SHA256(x-webhook-timestamp + rawBody, secret))`,
-verified against the raw bytes. Unsigned or misconfigured callers get 401 —
-without `CASHFREE_SECRET_KEY` the endpoint rejects everything rather than
-granting free access.
-
-Renewals stack from the later of now and the current expiry, and are idempotent
-per `order_id` so Cashfree's retries cannot grant 30 days each. The daily
-`subscription` cron reconciles against the Cashfree order API as a backstop for
-a webhook that never arrived, then notifies the admin at most once per day.
-
-Check state any time with `/payment` in the admin bot.
-
-## Diagnosing a WhatsApp history problem
-
-WhatsApp pushes a device its message history exactly once, at link time. If the
-worker was linked while history sync was off, that payload is gone and the only
-recovery is re-pairing. The worker now detects this automatically: it inspects
-`creds.processedHistoryMessages` and enables `syncFullHistory` for any session
-that has never received one.
-
-To confirm what the server actually sends:
+Manually run a job:
 
 ```bash
-cd worker && node probe-history.mjs      # read-only, ingests nothing
+curl -fsS -H "Authorization: Bearer $CRON_SECRET" \
+  https://matzhub.com/api/cron/<job>
 ```
 
-Look for `history.set` batches. Zero batches with `neverSynced=true` means the
-session must be re-paired via the admin bot (WhatsApp → Attach new account).
+Every job records a row in `automation_runs`; `/api/cron/watchdog` alerts if
+any critical job misses its SLA.
+
+---
+
+## Health / readiness / liveness / monitoring
+
+| Endpoint            | Purpose                                            | Auth?    |
+| ------------------- | -------------------------------------------------- | -------- |
+| `/api/liveness`     | Is the process alive? No DB query.                 | none     |
+| `/api/readiness`    | Can it serve traffic? Pings DB.                    | none     |
+| `/api/health`       | Human-facing health, published product count.      | none     |
+| `/api/monitoring`   | Machine-readable status for external monitors.     | none     |
+| Worker `/health`    | Baileys connection state + queue counters.         | none     |
+
+There is exactly one implementation of each. Do not add duplicates.
+
+External monitor recommendation: poll `/api/monitoring` on the platform and
+`$WA_WORKER_URL/health` on the worker every minute.
+
+---
+
+## Ingestion path
+
+```
+WhatsApp group  →  worker (Baileys)  →  POST /api/ingest  →  ingestBatch()  →
+  Supabase (image upload) + Postgres (product row) → publication/review state
+```
+
+`/api/ingest`:
+
+- **POST only.** GET returns 405 (Next.js default) — this is correct, do not
+  add a GET stub.
+- Authenticated with `INGEST_TOKEN`. Fails-closed: unset token → 401 in
+  production.
+- Idempotent by `messageId`.
+- Enforces `SUPPLIER_INGESTION_NUMBER` isolation when set.
+- Returns 503 in maintenance mode (worker retries later; nothing is lost).
+
+---
 
 ## Backup / restore
 
-A nightly logical backup runs on GitHub Actions (`.github/workflows/backup.yml`,
-03:00 UTC) and is kept as a 30-day artifact. It runs there rather than on a
-Vercel cron because functions cannot execute `pg_dump`, and the architecture has
-no VPS. It requires the `DATABASE_URL` repository secret and fails loudly if the
-dump is missing `categories`, `manufacturers`, `settings` or `products` — a dump
-that lost the configuration would be worse than none, since restoring it would
-overwrite a working setup with an empty one.
+Nightly logical backup runs on GitHub Actions
+(`.github/workflows/backup.yml`, 03:00 UTC), retained 30 days. Requires the
+`DATABASE_URL` repository secret; fails loudly if the dump is missing
+`categories`, `manufacturers`, `settings` or `products`.
 
-One dump covers everything: channel mappings, categories, settings, the
-subscription anchor, suppliers and products.
+Ad-hoc:
 
 ```bash
-./scripts/backup.sh                                    # manual, uncompressed
-./scripts/restore.sh backups/matzhub_db_<ts>.sql.gz    # accepts .sql or .sql.gz
+./scripts/backup.sh                                       # uncompressed
+./scripts/restore.sh backups/matzhub_db_<ts>.sql.gz       # .sql or .sql.gz
 ```
 
-Restore prompts for confirmation before running, because the dump is
-`--clean --if-exists` and replaces every object. Backups are never committed.
+Restore prompts for confirmation because the dump is `--clean --if-exists`
+and drops every object first.
 
-## Cron schedule (when deployment isn't Vercel)
+---
 
-Any scheduler hitting these URLs with `?secret=$CRON_SECRET`:
+## Subscription (Cashfree)
 
-```
-*/2 * * * *  /api/cron/notify
-*/10 * * * * /api/cron/self-heal
-*/15 * * * * /api/cron/watchdog
-*/30 * * * * /api/cron/trending
-0 * * * *    /api/cron/expire
-15 * * * *   /api/cron/price-alerts
-30 * * * *   /api/cron/cart-recovery
-45 * * * *   /api/cron/notify-retry
-30 20 * * *  /api/cron/supplier
-30 2 * * *   /api/cron/digest
-```
+Operator billing. Gates exactly one thing: whether newly ingested products
+publish automatically. Customers never see subscription state. Expiry never
+touches published products.
 
-Or `docker compose exec platform curl http://localhost:3000/api/cron/<job>?secret=...`.
+Webhook: `POST https://matzhub.com/api/payments/cashfree/webhook`.
+Signature: `base64(HMAC-SHA256(x-webhook-timestamp + rawBody, secret))`
+verified against the raw bytes. Unsigned / misconfigured callers → 401.
+
+Renewals stack from the later of now and the current expiry, idempotent per
+`order_id`. Daily `subscription` cron reconciles against the Cashfree order
+API as a backstop for a webhook that never arrived, notifying the admin at
+most once per day.
+
+Check state any time with `/payment` in the admin bot.
+
+---
+
+## Recovery procedures
+
+**Worker process is down** (`/worker` shows unreachable):
+- AWS EC2 (PM2): `pm2 status`, `pm2 logs`, `pm2 restart matzhub-worker`.
+- Fly.io: `fly status -a matzhub-worker && fly logs -a matzhub-worker`.
+- Restart: `fly apps restart matzhub-worker` or `pm2 restart matzhub-worker` (or your host's equivalent).
+- Session persists in Supabase; no QR after restart.
+
+**Worker running, connection state = "close" / "connecting" forever:**
+- `/relink` from Telegram admin → fresh QR → re-pair.
+
+**Vercel deploy failing:**
+- Check `.github/workflows/deploy.yml` output.
+- Rollback: `vercel rollback` or promote a previous deployment.
+
+**Database unreachable:**
+- `/api/readiness` returns 503. Check Supabase project status.
+- Restore from the newest artifact in the Actions run of `backup.yml`.
+
+**Ingestion queue backing up:**
+- `/api/monitoring` `ingestStaleMinutes` climbing.
+- Check worker `/health` for `connectionState`. If closed, `/relink`.
+- `self-heal` cron re-runs stuck messages every 10 min automatically.

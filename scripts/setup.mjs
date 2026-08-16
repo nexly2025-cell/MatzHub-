@@ -153,10 +153,10 @@ console.log(`
 
   Optional, but recommended before live traffic:
 
-    ADMIN_PASSWORD           — gates /admin
-    SUPABASE_URL + SECRET    — image + session hosting
-    OPENAI_API_KEY           — better product copy
-    TELEGRAM_BOT_TOKEN       — order + failure alerts
-    WA_WORKER_URL + worker   — WhatsApp ingestion live
+    ADMIN_PASSWORD             — gates /admin
+    SUPABASE_URL + SERVICE_KEY — image + session hosting
+    OPENAI_API_KEY             — better product copy
+    TELEGRAM_ADMIN_BOT_TOKEN + TELEGRAM_ADMIN_CHAT_ID — operator control
+    WA_WORKER_URL + WA_WORKER_TOKEN — WhatsApp ingestion live
 `);
 process.exit(0);

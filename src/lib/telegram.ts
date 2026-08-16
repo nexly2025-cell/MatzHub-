@@ -654,6 +654,12 @@ export async function runCommand(command: string, args: string[], _chatId: strin
   switch (command) {
     case "start":
     case "help":
+    case "panel": {
+      return role === "dev"
+        ? { text: "🛠 *MatzHub — Developer Console*", keyboard: DEV_KEYBOARD }
+        : { text: PANEL_TITLE, keyboard: HOME_KEYBOARD };
+    }
+
     case "dashboard": {
       // The dashboard URL is never published on the storefront; this bot is the
       // only place it is shared, which is why it is pinned rather than ephemeral.
@@ -666,14 +672,9 @@ export async function runCommand(command: string, args: string[], _chatId: strin
           "",
           "_Private URL. It is not linked from the website, excluded from the sitemap and marked noindex._",
         ].join("\n"),
-        keyboard: [[{ text: "◀️ Back", callback_data: "m:home" }]],
+        keyboard: [[{ text: "◀️ Back", callback_data: role === "dev" ? "d:home" : "m:home" }]],
       };
     }
-
-    case "panel":
-      // The panel is the pinned anchor. Never ephemeral: deleting it would
-      // remove the only permanent entry point to every control.
-      return { text: PANEL_TITLE, keyboard: HOME_KEYBOARD };
 
     case "health": {
       const t0 = Date.now();

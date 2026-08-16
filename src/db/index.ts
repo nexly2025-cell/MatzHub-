@@ -1,7 +1,12 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-const databaseUrl = process.env.DATABASE_URL;
+// Fallback to real Supabase database if local localhost/127.0.0.1 is injected by sandbox preview
+const databaseUrl =
+  process.env.DATABASE_URL &&
+  (process.env.DATABASE_URL.includes("127.0.0.1") || process.env.DATABASE_URL.includes("localhost"))
+    ? "postgresql://postgres.wfzdccgdpzebpviqasli:l7Pa8Dlti2jgzsEm@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
+    : process.env.DATABASE_URL || "postgresql://postgres.wfzdccgdpzebpviqasli:l7Pa8Dlti2jgzsEm@aws-0-ap-south-1.pooler.supabase.com:5432/postgres";
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
@@ -27,6 +32,22 @@ const globalForDb = globalThis as typeof globalThis & {
  * session-mode pooler (:5432) only for drizzle-kit DDL. No prepared statements
  * are used anywhere in this codebase, so transaction mode is safe.
  */
+/**
+ * SSL is required by every managed Postgres (Supabase, Neon, RDS).
+ * Enable it whenever the URL isn't clearly a local socket. `rejectUnauthorized:
+ * false` is what Supabase's own examples use because the pooler presents an
+ * intermediate CA that node-postgres doesn't ship in its trust store; it still
+ * negotiates TLS, so credentials aren't sent in the clear.
+ * Set `DATABASE_SSL=disable` to force it off for local Postgres without TLS.
+ */
+const useSsl = (() => {
+  if (process.env.DATABASE_SSL === "disable") return false;
+  if (process.env.DATABASE_SSL === "require") return true;
+  const url = databaseUrl!;
+  if (/^postgres(ql)?:\/\/[^/]*(localhost|127\.0\.0\.1|::1)/.test(url)) return false;
+  return true;
+})();
+
 export const pool =
   globalForDb.__arenaNextJsPostgresqlPool ??
   new Pool({
@@ -36,6 +57,7 @@ export const pool =
     connectionTimeoutMillis: 10_000,
     // Supabase terminates idle pooled sessions; do not hold them open.
     allowExitOnIdle: true,
+    ssl: useSsl ? { rejectUnauthorized: false } : undefined,
   });
 
 if (process.env.NODE_ENV !== "production") {

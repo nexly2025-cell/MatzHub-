@@ -34,8 +34,8 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
 
           {/* One quiet label per card. More badges = discount bin. */}
           {off > 0 && (
-            <span className="label absolute left-3 top-3 rounded-full bg-surface/92 px-2.5 py-1 text-ink backdrop-blur-sm">
-              New
+            <span className="label absolute left-3 top-3 rounded-full bg-surface/92 px-2.5 py-1 text-ink backdrop-blur-sm text-accent font-medium">
+              -{off}%
             </span>
           )}
           {p.availability === "low_stock" && (

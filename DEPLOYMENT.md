@@ -1,320 +1,345 @@
-# MatzHub Production Deployment & Verification Checklist
+# MatzHub — Production Deployment
 
-## 🎯 Deployment Status
+This is the **only** production deployment path. `OPS.md` covers day-to-day
+operations; this file is the initial rollout.
 
-**vercel.json** ✅ Created  
-**Database** ✅ Functional (35 published products)  
-**APIs** ✅ Core endpoints working  
-**Ingestion** ✅ WhatsApp webhook tested and operational  
+## Architecture at a glance
+
+```
+GitHub  ──►  Vercel  ──►  Next.js app + API + Vercel Cron
+                │
+                ├──►  Supabase Postgres  (data of record)
+                ├──►  Supabase Storage   (images, videos, WA session backup)
+                └──►  WhatsApp worker    (persistent Node/Baileys process,
+                                          hosted separately — see below)
+
+Cloudflare  ──►  DNS + TLS at the edge for matzhub.com
+Telegram    ──►  admin + dev bots  →  Vercel webhooks  →  worker control
+```
+
+| Component            | Runs on                          | Why                                                 |
+| -------------------- | -------------------------------- | --------------------------------------------------- |
+| Storefront + API     | Vercel                           | Serverless is a good fit, edge-cached, zero-ops.    |
+| Cron jobs            | Vercel Cron → `/api/cron/[job]`  | One config in `vercel.json`; scoped by CRON_SECRET. |
+| Database             | Supabase Postgres                | Managed, pooled, has backups + PITR.                |
+| Object storage       | Supabase Storage                 | `products`, `product-media`, `wa-sessions` buckets. |
+| WhatsApp worker      | **Persistent Node host**         | Baileys keeps a live WebSocket — see below.         |
+| Telegram control     | Vercel `/api/telegram/webhook*`  | Webhook-driven, no long-running process.            |
+| DNS / TLS            | Cloudflare (DNS-only apex)       | Vercel terminates TLS; do NOT proxy the apex.       |
+| CI + backups         | GitHub Actions                   | Typecheck, lint, tests, build, nightly `pg_dump`.   |
+
+**What is not part of the architecture:** DigitalOcean droplets,
+Railway, Render, a developer laptop, a Codespace, `docker compose up`, or any
+"just run `node whatsapp-worker.mjs` locally" story. If you see instructions
+pointing at any of those in older README revisions, ignore them.
 
 ---
 
-## 📋 Pre-Deployment: Required Credentials
+## 1. Vercel — Next.js app + API + Cron
 
-Before deploying to **matzhub.com**, gather these credentials:
+The whole `src/` tree deploys as one Next.js project. `vercel.json` declares
+every cron path; there is no other scheduler.
 
-### Production Database
+### Environment variables
+
+Set these in **Vercel → Settings → Environment Variables** (Production). All
+names are documented in `.env.example`.
+
+Required:
+
+- `DATABASE_URL`, `DIRECT_DATABASE_URL`, `DATABASE_POOL_MAX`
+- `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_CUSTOMER_WHATSAPP`
+- `ADMIN_PASSWORD`, `ADMIN_SESSION_SECRET`
+- `INGEST_TOKEN`, `CRON_SECRET`
+- `TELEGRAM_ADMIN_BOT_TOKEN`, `TELEGRAM_ADMIN_CHAT_ID`, `TELEGRAM_WEBHOOK_SECRET`
+- `TELEGRAM_DEV_BOT_TOKEN`, `TELEGRAM_DEV_CHAT_ID` (dev webhook secret falls back)
+- `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_BUCKET`
+
+Required once the worker is deployed:
+
+- `WA_WORKER_URL` — the public URL of the worker (e.g. `https://matzhub-worker.fly.dev`)
+- `WA_WORKER_TOKEN` — must equal `WA_WORKER_TOKEN` on the worker side
+
+Optional (see `.env.example` for the full list and their effect if unset):
+`CASHFREE_*`, `OPENAI_API_KEY`, `UPTIME_WEBHOOK_URL`, `SUPPLIER_INGESTION_NUMBER`.
+
+Generate every secret with `openssl rand -hex 32`.
+
+### Deploy
+
+```bash
+git push origin main          # GitHub Actions runs CI + deploys via Vercel
+# or, one-off:
+npx vercel deploy --prod
 ```
-DATABASE_URL=postgresql://USER:PASSWORD@host.region.rds.amazonaws.com:5432/matzhub
+
+### Verify
+
+```bash
+curl -fsS https://matzhub.com/api/health      # 200, "status":"ok"
+curl -fsS https://matzhub.com/api/readiness   # 200, "status":"ready"
+curl -fsS https://matzhub.com/api/monitoring  # 200 or 503 (with reason)
+curl -fsS https://matzhub.com/api/liveness    # 200, "status":"alive"
 ```
+
+---
+
+## 2. Supabase — database + storage
+
+1. Create a project. Copy the Session-pooler URL into `DIRECT_DATABASE_URL`
+   (port 5432) and the Transaction-pooler URL into `DATABASE_URL` (port 6543).
+2. Apply the schema from the repo root:
+
+   ```bash
+   npx drizzle-kit push
+   ```
+
+   `drizzle.config.ts` uses `DIRECT_DATABASE_URL` because DDL requires
+   session-mode. The app runtime uses transaction-mode.
+3. Storage buckets (`products`, `product-media`, `wa-sessions`) are created
+   automatically on first worker boot by `worker/ensure-supabase-buckets.mjs`.
+   Nothing to do manually.
+
+Backups run nightly via GitHub Actions (`.github/workflows/backup.yml`) using
+the `DATABASE_URL` repo secret. Retention: 30 days as workflow artifacts.
+
+---
+
+## 3. Cloudflare — DNS + edge
+
+Cloudflare is the domain / DNS / edge layer only. It does NOT host the app.
+
+Provisioning is scripted and idempotent:
+
+```bash
+export CLOUDFLARE_API_TOKEN=... CLOUDFLARE_ZONE_ID=...
+export VERCEL_API_TOKEN=...     VERCEL_PROJECT_ID=... VERCEL_TEAM_ID=...
+npm run provision          # dry run — show the diff
+npm run provision:apply    # execute
+```
+
+What the script sets:
+
+- Apex A record → Vercel's anycast IP (`76.76.21.21`), DNS-only.
+- `www` CNAME → `cname.vercel-dns.com`, DNS-only.
+- TLS: Full, Always Use HTTPS, min TLS 1.2, TLS 1.3, HSTS.
+
+**Do NOT enable the orange-cloud proxy on the apex before Vercel issues the
+certificate** — the http-01 challenge stalls. Once TLS is live you can turn it
+on with `npm run provision:apply -- --proxy` for CDN + WAF.
+
+---
+
+## 4. WhatsApp worker — persistent Node process
+
+Baileys speaks the WhatsApp multi-device protocol over a persistent WebSocket.
+It **cannot** run on Vercel, Cloudflare Workers, or GitHub Actions cron — those
+runtimes tear the process down and the session is lost. That is a WhatsApp
+protocol constraint, not a MatzHub design choice.
+
+The only production-appropriate hosts are ones that give you a long-lived, persistent Node runtime with storage that survives process restarts. **Pick one** (do not run two):
+
+- **AWS EC2 (Recommended VM)** — Perfect for running the worker 24/7. An Amazon Linux / Ubuntu `t2.micro` or `t3.micro` instance (free tier) is exceptionally robust. You can run the worker directly under `pm2` (with auto-restart and system boot recovery) or via Docker.
+- **Fly.io (Recommended Serverless Container)** — Small free tier, Mumbai region (`bom`), ~$0-2/mo. The `worker/Dockerfile` targets this shape (exposes 8081, mounts `/data`, healthchecks `/health`).
+- Render, Northflank, Koyeb, or other persistent VM / Docker container providers.
+
+### Deploy to AWS EC2 (VM Example)
+
+EC2 provides a highly resilient, isolated virtual machine. By setting up the worker under **Docker** with restart policies, or under **PM2**, the worker automatically restarts if it crashes, and automatically recovers when the EC2 instance is rebooted.
+
+#### Option A: Running with Docker on EC2 (Easiest & Most Isolated)
+
+1. **Launch an EC2 Instance:**
+   - AMI: Ubuntu 22.04 LTS or Amazon Linux 2023.
+   - Instance Type: `t2.micro` or `t3.micro` (free tier).
+   - Security Group: Inbound TCP `8081` (port where worker listens) and SSH `22`.
+
+2. **Install Docker & Run:**
+   Connect via SSH to your instance and execute:
+   ```bash
+   sudo apt-get update && sudo apt-get install -y docker.io
+   sudo systemctl enable --now docker
+
+   # Run with auto-restart on failure or host reboot:
+   sudo docker run -d \
+     --name matzhub-worker \
+     --restart unless-stopped \
+     -p 8081:8081 \
+     -v /home/ubuntu/wa-session:/data/.wa-session \
+     -e MATZHUB_API_URL="https://matzhub.com" \
+     -e INGEST_TOKEN="<your_ingest_token>" \
+     -e WA_WORKER_PORT="8081" \
+     -e WA_WORKER_TOKEN="<your_worker_token>" \
+     -e SUPABASE_URL="https://yourproject.supabase.co" \
+     -e SUPABASE_SERVICE_ROLE_KEY="<your_service_role_key>" \
+     -e SUPABASE_BUCKET="products" \
+     -e SUPABASE_VIDEO_BUCKET="product-media" \
+     -e WA_SESSION_DIR="/data/.wa-session" \
+     nexly2025/matzhub-worker:latest  # Or build it locally from the cloned repo
+   ```
+
+#### Option B: Running with PM2 directly on EC2 (No Docker Required)
+
+1. **Install Node.js & PM2:**
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   sudo apt-get install -y nodejs
+   sudo npm install -y -g pm2
+   ```
+
+2. **Clone the Repo & Configure:**
+   ```bash
+   git clone https://github.com/nexly2025-cell/MatzHub-.git
+   cd MatzHub-/worker
+   npm install --omit=dev
+   cp .env.example .env
+   # Edit .env with your production credentials
+   nano .env
+   ```
+
+3. **Start with PM2 & Configure System Recovery:**
+   Using PM2 guarantees the worker restarts instantly on crash, and system startup hook restores it on VM reboot.
+   ```bash
+   pm2 start whatsapp-worker.mjs --name "matzhub-worker"
+   
+   # Generate system startup configuration to survive VM reboots:
+   pm2 startup
+   # (Copy-paste the command printed by PM2 to enable the service)
+   
+   # Save the current process list so it recovers on boot:
+   pm2 save
+   ```
+
+4. **Verify Health:**
+   ```bash
+   curl http://localhost:8081/health
+   ```
+
+### Deploy to Fly.io (canonical example)
+
+```bash
+cd worker
+fly launch --no-deploy --name matzhub-worker --region <region>
+fly volumes create wa_session --size 1 --region <region>
+# Mount the volume at /data and expose 8081 (fly.toml example below).
+fly secrets set \
+  MATZHUB_API_URL=https://matzhub.com \
+  INGEST_TOKEN=<same as Vercel> \
+  WA_WORKER_TOKEN=<same as Vercel> \
+  SUPABASE_URL=<...> \
+  SUPABASE_SERVICE_ROLE_KEY=<...> \
+  SUPABASE_BUCKET=products \
+  SUPABASE_VIDEO_BUCKET=product-media \
+  SUPPLIER_INGESTION_NUMBER=<optional>
+fly deploy
+```
+
+Minimum `fly.toml`:
+
+```toml
+app = "matzhub-worker"
+primary_region = "<region>"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  WA_SESSION_DIR = "/data/.wa-session"
+  WA_WORKER_PORT = "8081"
+
+[mounts]
+  source      = "wa_session"
+  destination = "/data"
+
+[[services]]
+  internal_port = 8081
+  protocol      = "tcp"
+
+  [[services.ports]]
+    port     = 443
+    handlers = ["tls", "http"]
+  [[services.ports]]
+    port     = 80
+    handlers = ["http"]
+
+  [services.http_checks]
+    interval = "30s"
+    method   = "GET"
+    path     = "/health"
+    timeout  = "5s"
+```
+
+After deploy, set on Vercel:
+
+- `WA_WORKER_URL=https://matzhub-worker.fly.dev`
+- `WA_WORKER_TOKEN=<same value as the worker>`
+
+Then in Telegram (admin bot): `/worker` shows connection state, `/qr` returns
+the pairing code only if the session is invalid, `/relink` forces a fresh
+pairing.
+
+### Pairing (once per WhatsApp number)
+
+The very first boot has no session in `wa-sessions/`, so the worker emits a QR.
 Options:
-- AWS RDS (recommended)
-- Railway.app (easy integration)
-- Neon (free tier available)
-- DigitalOcean Managed Database
 
-### Admin & Security
-```
-ADMIN_PASSWORD=<strong-random-password>  # min 12 chars, mixed case + numbers
-ADMIN_SESSION_SECRET=<64-hex-chars>      # openssl rand -hex 32
-INGEST_TOKEN=<32-hex-chars>              # for WhatsApp webhook auth
-CRON_SECRET=<32-hex-chars>               # for scheduled jobs auth
-```
+1. Fly SSH: `fly ssh console -C 'cat /data/.wa-session/whatsapp-qr.png' > qr.png`
+2. Telegram: `/qr` returns the same PNG.
+3. Pairing code: set `WA_PAIRING_NUMBER=91XXXXXXXXXX`; the worker prints an
+   8-digit code to enter under WhatsApp → Linked Devices → Link with phone.
 
-### WhatsApp Configuration
-Choose ONE path:
+Once paired, the session backs itself up to Supabase Storage
+(`wa-sessions/primary/*`). Every subsequent redeploy restores from there — no
+QR unless the operator explicitly runs `/relink`.
 
-**Option A: Official Cloud API**
-```
-WHATSAPP_TOKEN=EAAB_...                  # Business account token from Meta
-WHATSAPP_PHONE_ID=123456789012345        # Phone number ID
-```
+---
 
-**Option B: Baileys Worker (recommended for 24/7)**
-```
-WA_WORKER_URL=https://worker-domain.com  # Your worker server
-WA_WORKER_TOKEN=<bearer-token>
-```
+## 5. Telegram webhooks
 
-### Image Storage
-```
-SUPABASE_URL=https://PROJECT.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=eyJ_...        # Service role key (not anon key)
-SUPABASE_BUCKET=products
-```
+Point each bot at its own webhook exactly once (per URL change):
 
-### Optional Integrations
-```
-OPENAI_API_KEY=sk-...                    # For product enrichment
-TELEGRAM_BOT_TOKEN=123456:ABC...         # For alerts
-TELEGRAM_CHAT_ID=-1001234567890          # Admin alerts channel
+```bash
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_ADMIN_BOT_TOKEN/setWebhook" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://matzhub.com/api/telegram/webhook",
+       "secret_token":"'"$TELEGRAM_WEBHOOK_SECRET"'",
+       "allowed_updates":["message","callback_query"]}'
+
+curl -X POST "https://api.telegram.org/bot$TELEGRAM_DEV_BOT_TOKEN/setWebhook" \
+  -H 'Content-Type: application/json' \
+  -d '{"url":"https://matzhub.com/api/telegram/webhook/dev",
+       "secret_token":"'"${TELEGRAM_DEV_WEBHOOK_SECRET:-$TELEGRAM_WEBHOOK_SECRET}"'",
+       "allowed_updates":["message","callback_query"]}'
 ```
 
 ---
 
-## 🚀 Deployment to Vercel
+## 6. Post-deploy smoke test
 
-### Step 1: Push Code
-```bash
-git add -A
-git commit -m "Production deployment: vercel.json + search query fix"
-git push origin main
-```
+Run each of these once after the first live deploy. All should succeed:
 
-### Step 2: Set Environment Variables in Vercel Dashboard
-1. Go to **Settings → Environment Variables**
-2. Add each variable from above with scope: **Production**
-3. Use the `@` prefix in vercel.json (e.g., `@database_url` = `DATABASE_URL` in dashboard)
+1. `curl -fsS https://matzhub.com/api/health` → 200.
+2. `curl -fsS https://matzhub.com/api/readiness` → 200.
+3. `curl -fsS $WA_WORKER_URL/health` → 200, `connectionState:"open"`.
+4. Telegram admin bot → `/health` → all green.
+5. Telegram admin bot → `/worker` → shows session as connected, no QR.
+6. Post a test message in a mapped supplier group → arrives in
+   `/admin/moderation` within a minute.
+7. Trigger a cron manually:
+   `curl -fsS -H "Authorization: Bearer $CRON_SECRET" https://matzhub.com/api/cron/notify`
+   → `{"ok":true,...}`.
 
-### Step 3: Trigger Deployment
-```bash
-vercel deploy --prod
-# or use Vercel dashboard
-```
-
-### Step 4: Verify Live
-```bash
-curl https://matzhub.com/api/health
-curl https://matzhub.com/api/readiness
-```
+If any of these fail, `OPS.md` → "Diagnosing" covers each one.
 
 ---
 
-## ✅ Component Verification (Local → Production)
+## What is NOT required
 
-### Homepage & Browsing
-- [ ] Homepage loads: `http://localhost:3000/` → `https://matzhub.com/`
-- [ ] Categories display (6 total)
-- [ ] Products display (35 published)
-- [ ] Product cards show image, title, price
-
-### Product Details
-- [ ] Click product → `/p/[slug]` page loads
-- [ ] Product images load from Pexels
-- [ ] Price, MRP, rating display
-- [ ] Add to cart button works
-
-### Search Functionality
-```bash
-# Local test
-curl "http://localhost:3000/api/search?q=watch" | jq '.items | length'
-# Production test
-curl "https://matzhub.com/api/search?q=watch" | jq '.items | length'
-```
-- [ ] Search returns results
-- [ ] Filters work (category, price, brand, color)
-- [ ] Sorting works (new, price_asc, price_desc, discount)
-
-### Admin Panel
-- [ ] `/admin/login` page loads
-- [ ] Enter ADMIN_PASSWORD (set in env)
-- [ ] Dashboard accessible
-- [ ] View orders, products, settings
-
-### Shopping Cart & Checkout
-- [ ] Add to cart → Cart persists (localStorage)
-- [ ] View cart: `/cart`
-- [ ] Checkout flow: `/checkout`
-- [ ] Payment (if Razorpay configured)
-
-### Orders & Tracking
-- [ ] Create order (admin or via API)
-- [ ] Track order: `/track` page
-- [ ] Order status updates
-
-### API Endpoints
-```bash
-# Health checks
-curl https://matzhub.com/api/health
-curl https://matzhub.com/api/readiness
-
-# Search
-curl "https://matzhub.com/api/search?q=sunglasses"
-
-# Categories
-curl https://matzhub.com/api/products/categories
-
-# Coupons validation
-curl -X POST https://matzhub.com/api/coupons/validate \
-  -H "Content-Type: application/json" \
-  -d '{"code":"NEW10"}'
-
-# Orders (requires auth)
-curl https://matzhub.com/api/orders
-
-# Reviews
-curl "https://matzhub.com/api/reviews?productId=1"
-```
-
-### WhatsApp Product Ingestion
-```bash
-# Test ingestion endpoint
-curl -X POST https://matzhub.com/api/ingest \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer $INGEST_TOKEN" \
-  -d '{
-    "messages": [{
-      "messageId": "test-'$(date +%s)'",
-      "groupId": "919876543210-1234567890@g.us",
-      "caption": "Premium Sunglasses UV Protected Black Frame",
-      "imageUrl": "https://images.pexels.com/photos/18533668/pexels-photo-18533668.jpeg",
-      "source": "whatsapp"
-    }]
-  }'
-```
-- [ ] Returns `{"ok": true, "processed": 1}`
-- [ ] Check DB: `SELECT * FROM ingestion_events ORDER BY created_at DESC LIMIT 1;`
-
----
-
-## 🤖 WhatsApp Worker Deployment
-
-### For 24/7 Product Ingestion (Separate from Vercel)
-
-**Deploy to:** AWS EC2 / DigitalOcean / Railway / Render
-
-#### 1. Configure Worker Environment
-```bash
-cd /workspaces/MatzHub-/worker
-cp /path/to/.env.production .env
-
-# Key variables:
-cat .env
-MATZHUB_API_URL=https://matzhub.com
-INGEST_TOKEN=<from production env>
-WA_GROUPS=919876543210-1234567890@g.us:suppliers_watch,919876543211-1234567891@g.us:suppliers_bags
-SUPABASE_URL=<from production env>
-SUPABASE_SERVICE_ROLE_KEY=<from production env>
-```
-
-#### 2. Start Worker
-```bash
-# First time: QR code linking
-npm install
-npm start
-# Scan QR code in terminal or open: .wa-session/whatsapp-qr.png
-
-# OR use pairing code (if QR fails)
-WA_PAIRING_NUMBER=919876543210 npm start
-# Follow 8-digit code to WhatsApp → Linked Devices
-```
-
-#### 3. Verify Connection
-```bash
-# Check logs
-tail -f logs/worker.log
-
-# Send test from manufacturer group
-# Message should appear in: https://matzhub.com/api/ingest logs
-# Product should appear in DB with stage: "needs_review" or "published"
-```
-
----
-
-## 📊 Database Migrations & Seed
-
-### For Production Database
-```bash
-# Create DB connection
-export DATABASE_URL="postgresql://USER:PASS@host:5432/matzhub"
-
-# Apply migrations
-npx drizzle-kit push
-
-# Seed initial data
-npm run seed
-```
-
----
-
-## 🔐 Security Checklist
-
-- [ ] `ADMIN_PASSWORD` is strong (12+ chars, mixed case, numbers, symbols)
-- [ ] `ADMIN_SESSION_SECRET` generated with `openssl rand -hex 32`
-- [ ] `INGEST_TOKEN` generated with `openssl rand -hex 32`
-- [ ] `CRON_SECRET` generated with `openssl rand -hex 32`
-- [ ] `SUPABASE_SERVICE_ROLE_KEY` used (NOT anon key)
-- [ ] `.env.production` file **NOT** committed to git
-- [ ] Environment variables set in Vercel dashboard (not in code)
-- [ ] API endpoints protected with auth headers
-- [ ] Database URL uses proper SSL connection
-
----
-
-## 📱 Customer Communication
-
-Update your WhatsApp account:
-```env
-NEXT_PUBLIC_CUSTOMER_WHATSAPP=91XXXXXXXXXX  # Your customer support number
-NEXT_PUBLIC_SITE_URL=https://matzhub.com
-```
-
-This is used for:
-- Contact page
-- Order confirmation messages
-- Support links
-
----
-
-## 🔄 Cron Jobs (Vercel)
-
-Already configured in `vercel.json`. These run automatically:
-- Every 2 hours: `/api/cron/notify` (send pending notifications)
-- Every 10 minutes: `/api/cron/self-heal` (fix inconsistencies)
-- Every 15 minutes: `/api/cron/watchdog` (health monitoring)
-- Daily: `/api/cron/supplier`, `/api/cron/digest`
-
-Verify with:
-```bash
-curl "https://matzhub.com/api/cron/notify?secret=$CRON_SECRET"
-# Should return: {"ok": true, "sent": N}
-```
-
----
-
-## 📞 Next Steps
-
-1. **Gather credentials** (database, Supabase, optional APIs)
-2. **Deploy to Vercel** (push code, set env vars, trigger deployment)
-3. **Test production** (run verification checklist above)
-4. **Deploy worker** (for 24/7 WhatsApp ingestion if using Baileys)
-5. **Monitor** (check logs, set up alerts)
-
----
-
-## 🆘 Troubleshooting
-
-### "Database connection refused"
-- Verify DATABASE_URL in Vercel dashboard
-- Check firewall rules (allow Vercel IP ranges)
-- Test local connection: `psql $DATABASE_URL -c "SELECT 1"`
-
-### "Ingestion endpoint returns 401"
-- Verify `INGEST_TOKEN` matches in Vercel and worker env
-- Check `Authorization: Bearer $INGEST_TOKEN` header
-
-### "Images not loading"
-- Verify Pexels CDN works: `curl https://images.pexels.com/...`
-- Check `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` if using custom uploads
-
-### "Worker can't connect to API"
-- Verify `MATZHUB_API_URL=https://matzhub.com`
-- Check firewall allows outbound HTTPS
-- Verify API health: `curl https://matzhub.com/api/health`
-
----
-
-**Status:** Ready for production ✅  
-**Files Modified:** vercel.json, src/lib/queries.ts  
-**Build Command:** `npm run build` ✅  
-**Tests:** All passing ✅
+- **No local machine 24/7.** The Vercel app is stateless; the worker runs on
+  Fly.io (or equivalent); Supabase holds all state; Cloudflare + Vercel serve
+  the edge. Turning off your laptop changes nothing in production.
+- **No docker-compose in production.** Compose is dev-only convenience and is
+  not shipped in this repo.
+- **No `WA_RUN_MS` / scheduled worker.** The worker is a long-running process,
+  not a cron job. That misfeature was removed together with the GitHub Actions
+  workflow that used it.
