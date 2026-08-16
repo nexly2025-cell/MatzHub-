@@ -77,22 +77,6 @@ export function pushRecent(productId: string) {
 }
 
 /* ---------- shopping cart ---------- */
-export function cartTotals(cart: CartItem[]) {
-  const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
-  const mrpTotal = cart.reduce((sum, item) => sum + item.mrp * item.qty, 0);
-  const savings = mrpTotal - subtotal;
-  const delivery = subtotal >= 999 ? 0 : 59;
-  const total = subtotal + delivery;
-
-  return {
-    subtotal,
-    mrpTotal,
-    savings,
-    delivery,
-    total,
-  };
-}
-
 export const getCart = () => read<CartItem[]>(CART_KEY, []);
 
 export function addToCart(item: CartItem) {
