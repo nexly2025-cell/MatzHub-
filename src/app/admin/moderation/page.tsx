@@ -50,14 +50,6 @@ export default async function Moderation() {
                 <p className="mt-1 text-xs text-muted">
                   {inr(p.price)} · cost {inr(p.costPrice)} · margin {p.marginPercent.toFixed(0)}%
                 </p>
-                {/* Internal attribution — never rendered on any public surface. */}
-                <dl className="mt-2 space-y-0.5 rounded-md bg-surface-2/60 p-2 text-[10.5px] leading-relaxed text-muted">
-                  <div><span className="text-subtle">Supplier:</span> {p.manufacturerName ?? "—"}</div>
-                  {p.sourceGroupId && <div><span className="text-subtle">Group:</span> <code className="break-all">{p.sourceGroupId}</code></div>}
-                  <div><span className="text-subtle">Received:</span> {p.createdAt.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })}</div>
-                  {p.messageId && <div><span className="text-subtle">Message:</span> <code className="break-all">{p.messageId}</code></div>}
-                  {p.categoryName && <div><span className="text-subtle">Category:</span> {p.categoryName}</div>}
-                </dl>
                 <div className="mt-2 flex flex-wrap gap-1.5">
                   <span className={`chip text-[10px] ${p.qualityScore < 50 ? "!text-[--color-rose] !border-[--color-rose]" : ""}`}>quality {p.qualityScore.toFixed(0)}</span>
                   <span className="chip text-[10px]">confidence {(p.confidence * 100).toFixed(0)}%</span>

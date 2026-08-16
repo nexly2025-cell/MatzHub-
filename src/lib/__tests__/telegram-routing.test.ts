@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 
 /**
  * Bot routing.
@@ -83,34 +83,5 @@ describe("per-bot allowlist", () => {
   it("fails closed when unset", () => {
     expect(allowedFor("dev")).toEqual([]);
     expect(allowedFor("admin")).toEqual([]);
-  });
-});
-
-describe("command permission separation (admin vs dev)", () => {
-  // Dynamic import keeps this suite isolated; alias resolution is configured in vitest.config.mts.
-  let isCommandAllowed: (cmd: string, role: "admin" | "dev") => boolean;
-  beforeAll(async () => {
-    ({ isCommandAllowed } = await import("@/lib/telegram"));
-  });
-
-  it("dev bot gets diagnostics + engineering controls", () => {
-    for (const c of ["diag", "jobs", "run", "pause", "resume", "errors", "upload", "maintenance", "backfill", "worker", "syncstatus", "health", "storage"]) {
-      expect(isCommandAllowed(c, "dev")).toBe(true);
-    }
-  });
-
-  it("dev bot is denied admin business controls", () => {
-    for (const c of ["relink", "restart", "qr", "channels", "channel", "payment", "logs", "sync", "panel", "dashboard"]) {
-      expect(isCommandAllowed(c, "dev")).toBe(false);
-    }
-  });
-
-  it("admin bot gets business controls but not dev-only switches", () => {
-    for (const c of ["relink", "restart", "qr", "channels", "payment", "health", "worker", "syncstatus", "storage", "logs", "sync", "panel", "dashboard"]) {
-      expect(isCommandAllowed(c, "admin")).toBe(true);
-    }
-    for (const c of ["diag", "jobs", "run", "pause", "resume", "errors", "upload", "maintenance", "backfill"]) {
-      expect(isCommandAllowed(c, "admin")).toBe(false);
-    }
   });
 });

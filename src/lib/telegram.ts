@@ -60,16 +60,7 @@ const DEV_ONLY = new Set([
 ]);
 
 export function isCommandAllowed(command: string, role: Role): boolean {
-  if (role === "dev") {
-    // Developer bot = diagnostics + engineering controls. Business operations
-    // (relink, restart, qr, channels, payment, logs, sync, panel) stay on the
-    // admin bot so a developer can never accidentally re-pair WhatsApp or
-    // mutate the commercial surface.
-    return (
-      DEV_ONLY.has(command) ||
-      ["worker", "syncstatus", "health", "storage"].includes(command)
-    );
-  }
+  if (role === "dev") return true;
   return ADMIN_COMMANDS.has(command) && !DEV_ONLY.has(command);
 }
 
@@ -516,13 +507,7 @@ async function withBack(r: Promise<Reply> | Reply, view: string): Promise<Reply>
   return { ...reply, keyboard: reply.keyboard ?? [[{ text: "◀️ Back", callback_data: view }]] };
 }
 
-export async function runCommand(
-  command: string,
-  args: string[],
-  _chatId: string,
-  role: Role = "admin",
-  origin?: string,
-): Promise<Reply> {
+export async function runCommand(command: string, args: string[], _chatId: string, role: Role = "admin"): Promise<Reply> {
   // Menu navigation is pure UI: swap the keyboard, never re-query.
   // Menu navigation is pure UI: swap the keyboard, never re-query.
   if (command.startsWith("d:") || command.startsWith("m:")) {
@@ -663,13 +648,7 @@ export async function runCommand(
   }
 
   if (!isCommandAllowed(command, role)) {
-    return {
-      text:
-        role === "dev"
-          ? "Not available on the developer bot. This control belongs to the admin bot."
-          : "That command lives on the developer bot.",
-      ephemeral: true,
-    };
+    return { text: "That command lives on the developer bot.", ephemeral: true };
   }
 
   switch (command) {
@@ -766,18 +745,9 @@ export async function runCommand(
           ephemeral: true,
         };
       }
-      // The cron route lives in this process on `next start`, but on Vercel
-      // serverless each invocation is its own container with no listener —
-      // a 127.0.0.1 loopback would fail with ECONNREFUSED. The webhook
-      // handler passes the origin it was called on, which is correct in
-      // every environment (Vercel, preview, single node). Fall back to the
-      // public site URL, then loopback for local dev.
-      const base = (
-        origin?.replace(/\/$/, "") ||
-        process.env.NEXT_PUBLIC_SITE_URL?.replace(/\/$/, "") ||
-        (process.env.NODE_ENV === "development" ? `http://127.0.0.1:${process.env.PORT || 3000}` : "")
-      );
-      if (!base) return { text: "*run* — no reachable origin for the cron route." };
+      // Loopback: the cron route lives in this process. Avoids a public
+      // round-trip and is immune to NEXT_PUBLIC_* being inlined at build time.
+      const base = `http://127.0.0.1:${process.env.PORT || 3000}`;
       const secret = process.env.CRON_SECRET;
       try {
         const res = await fetch(`${base}/api/cron/${job}`, {

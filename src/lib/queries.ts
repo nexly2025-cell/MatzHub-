@@ -250,35 +250,8 @@ export async function getAdminSnapshot() {
   };
 }
 
-/**
- * Pending-review queue for /admin/moderation.
- * Joins the manufacturer (internal supplier attribution) so the operator can
- * see at a glance which supplier group a product came from. This is an
- * admin-only surface — the join fields are never selected by public routes.
- */
 export async function getPendingProducts() {
-  return db
-    .select({
-      id: products.id,
-      title: products.title,
-      price: products.price,
-      costPrice: products.costPrice,
-      marginPercent: products.marginPercent,
-      qualityScore: products.qualityScore,
-      confidence: products.confidence,
-      heroImage: products.heroImage,
-      messageId: products.messageId,
-      createdAt: products.createdAt,
-      manufacturerName: manufacturers.name,
-      sourceGroupId: manufacturers.sourceGroupId,
-      categoryName: categories.name,
-    })
-    .from(products)
-    .leftJoin(manufacturers, eq(manufacturers.id, products.manufacturerId))
-    .leftJoin(categories, eq(categories.id, products.categoryId))
-    .where(eq(products.status, "pending_review"))
-    .orderBy(desc(products.createdAt))
-    .limit(50);
+  return db.select().from(products).where(eq(products.status, "pending_review")).orderBy(desc(products.createdAt)).limit(50);
 }
 
 export async function getRecentOrders(limit = 25) {

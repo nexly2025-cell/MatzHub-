@@ -13,7 +13,7 @@ anything.
 GitHub  ──►  Vercel  ──►  Next.js app + API + Vercel Cron
                 │
                 ├──►  Supabase (Postgres + Storage)
-                └──►  WhatsApp worker (persistent Node/Baileys, hosted on EC2)
+                └──►  WhatsApp worker (persistent Node/Baileys, hosted on AWS EC2 or Fly.io)
 
 Cloudflare  = DNS / TLS for matzhub.com
 Telegram    = admin + dev bots → Vercel webhooks → worker control
@@ -35,7 +35,7 @@ npm test                   # vitest
 ```
 
 Optional: run the WhatsApp worker locally in a second terminal (for testing
-ingestion — production runs the same file on EC2):
+ingestion — production runs the same file on AWS EC2 or Fly.io):
 
 ```bash
 cd worker && npm install && node whatsapp-worker.mjs
@@ -73,7 +73,7 @@ Role is decided by the webhook URL, not the sender.
 Baileys speaks the WhatsApp multi-device protocol over a persistent
 WebSocket. It cannot run on Vercel / Cloudflare Workers / GitHub Actions
 cron — the process would be torn down between requests. The worker runs on a
-persistent Node host (EC2 in the canonical setup).
+persistent Node host (AWS EC2 or Fly.io in the canonical setups).
 
 Two link methods: QR (default, retrievable via Telegram `/qr` or from the
 worker's mounted `/data/.wa-session/whatsapp-qr.png`), or pairing code via

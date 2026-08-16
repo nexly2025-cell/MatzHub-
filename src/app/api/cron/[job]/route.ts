@@ -306,9 +306,7 @@ async function storageSweepJob() {
 /** Expires Telegram status messages older than their TTL. */
 async function telegramSweepJob() {
   const { sweepExpiredMessages } = await import("@/app/api/telegram/webhook/route");
-  // One pass covers both bots — each queued row records its owning bot.
-  const swept = await sweepExpiredMessages();
-  return { swept };
+  return { swept: await sweepExpiredMessages() };
 }
 
 const JOBS: Record<string, () => Promise<Record<string, number>>> = {

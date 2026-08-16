@@ -3,9 +3,7 @@ name: Database backup
 # Nightly logical backup of the production database.
 #
 # Runs on GitHub Actions rather than a Vercel cron because Vercel functions
-# cannot execute pg_dump. It deliberately does NOT run on the worker EC2
-# instance: backups must survive losing that instance, so they run in CI,
-# independent of every production component.
+# cannot execute pg_dump, and the approved architecture has no VPS to run it on.
 #
 # Captures every table in one file: channel mappings, categories, settings,
 # products, suppliers and the subscription anchor. Restore with:

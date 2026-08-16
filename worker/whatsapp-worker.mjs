@@ -43,6 +43,7 @@ const CONFIG = {
   sessionDir: process.env.WA_SESSION_DIR || path.join(__dirname, ".wa-session"),
   port: Number(process.env.WA_WORKER_PORT || 8081),
   workerToken: process.env.WA_WORKER_TOKEN || "",
+  cronSecret: process.env.CRON_SECRET || "",
   // Comma-separated group names to watch. Empty = watch every group you're in.
   groups: (process.env.WA_GROUPS || "").split(",").map((g) => g.trim()).filter(Boolean),
   maxImageBytes: 5 * 1024 * 1024,
@@ -786,8 +787,58 @@ http
 process.on("unhandledRejection", (e) => log("unhandled_rejection", { error: String(e) }));
 process.on("uncaughtException", (e) => log("uncaught_exception", { error: e.message }));
 
+function startCronScheduler() {
+  if (!CONFIG.cronSecret) {
+    log("cron_scheduler_skipped", { reason: "CRON_SECRET is not configured on the worker." });
+    return;
+  }
+
+  log("cron_scheduler_started", { note: "EC2 worker scheduler now driving sub-daily jobs." });
+
+  // List of runnable sub-daily jobs matching their vercel.json frequencies
+  const subDailyJobs = [
+    { name: "telegram-sweep", intervalMs: 5 * 60 * 1000 },
+    { name: "self-heal", intervalMs: 10 * 60 * 1000 },
+    { name: "watchdog", intervalMs: 15 * 60 * 1000 },
+    { name: "trending", intervalMs: 30 * 60 * 1000 },
+    { name: "expire", intervalMs: 60 * 60 * 1000 },
+    { name: "price-alerts", intervalMs: 60 * 60 * 1000 },
+    { name: "cart-recovery", intervalMs: 60 * 60 * 1000 },
+    { name: "notify-retry", intervalMs: 60 * 60 * 1000 },
+    { name: "notify", intervalMs: 120 * 60 * 1000 },
+    { name: "supplier", intervalMs: 24 * 60 * 60 * 1000 },
+    { name: "subscription", intervalMs: 24 * 60 * 60 * 1000 },
+  ];
+
+  const trigger = async (job) => {
+    try {
+      const res = await fetch(`${CONFIG.apiUrl}/api/cron/${job}`, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${CONFIG.cronSecret}`,
+          "Content-Type": "application/json"
+        },
+        signal: AbortSignal.timeout(45000)
+      });
+      const body = await res.json().catch(() => ({}));
+      if (res.ok && body.ok !== false) {
+        log("cron_trigger_success", { job, detail: body.detail });
+      } else {
+        log("cron_trigger_failed", { job, status: res.status, error: body.error || "unknown" });
+      }
+    } catch (e) {
+      log("cron_trigger_error", { job, error: e.message });
+    }
+  };
+
+  for (const job of subDailyJobs) {
+    setInterval(() => trigger(job.name), job.intervalMs);
+  }
+}
+
 log("starting", { api: CONFIG.apiUrl, session: CONFIG.sessionDir });
 void safeStart("boot");
+startCronScheduler();
 
 // This worker is designed to run continuously. The previous WA_RUN_MS
 // "scheduled shutdown" (default 15 minutes) was an artefact of an obsolete

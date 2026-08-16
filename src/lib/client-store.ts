@@ -112,15 +112,6 @@ export function clearCart() {
   write(CART_KEY, []);
 }
 
-/** Cart totals for the order summary and WhatsApp message. */
-export function cartTotals(cart: CartItem[]) {
-  const subtotal = cart.reduce((s, i) => s + i.price * i.qty, 0);
-  const mrpTotal = cart.reduce((s, i) => s + (i.mrp || i.price) * i.qty, 0);
-  const savings = Math.max(0, mrpTotal - subtotal);
-  const delivery = subtotal >= 999 || subtotal === 0 ? 0 : 59;
-  return { subtotal, mrpTotal, savings, delivery, total: subtotal + delivery };
-}
-
 /* ---------- analytics beacon ---------- */
 export function track(name: string, props: Record<string, unknown> = {}) {
   if (typeof window === "undefined") return;

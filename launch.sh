@@ -8,7 +8,7 @@
 #     ./launch.sh doctor       report which env vars are configured
 #
 #  This script is dev-only. Production deployment is documented in
-#  DEPLOYMENT.md (Vercel + EC2 worker + Supabase + Cloudflare) and is
+#  DEPLOYMENT.md (Vercel + Fly.io worker + Supabase + Cloudflare) and is
 #  never a bare-metal `./launch.sh start` in a screen session.
 #
 #  Idempotent. Safe to run repeatedly.

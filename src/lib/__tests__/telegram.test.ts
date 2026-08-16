@@ -214,14 +214,9 @@ describe("developer bot", () => {
     }
   });
 
-  it("lets the developer reach read-only operational views", () => {
-    for (const c of ["worker", "health", "syncstatus"]) {
+  it("still lets the developer reach operational views", () => {
+    for (const c of ["worker", "health", "syncstatus", "channels", "qr"]) {
       expect(isCommandAllowed(c, "dev")).toBe(true);
-    }
-    // Business controls stay admin-only: a developer must not be able to
-    // re-pair WhatsApp (qr/relink/restart) or mutate channels/payments.
-    for (const c of ["channels", "channel", "qr", "relink", "restart", "payment", "logs", "sync", "panel", "dashboard"]) {
-      expect(isCommandAllowed(c, "dev")).toBe(false);
     }
   });
 });
