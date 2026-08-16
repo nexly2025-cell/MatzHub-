@@ -28,12 +28,6 @@ Telegram    ──►  admin + dev bots  →  Vercel webhooks  →  worker contr
 | DNS / TLS            | Cloudflare (DNS-only apex)       | Vercel terminates TLS; do NOT proxy the apex.       |
 | CI + backups         | GitHub Actions                   | Typecheck, lint, tests, build, nightly `pg_dump`.   |
 
-<<<<<<< HEAD
-**What is not part of the architecture:** DigitalOcean droplets,
-Railway, Render, a developer laptop, a Codespace, `docker compose up`, or any
-"just run `node whatsapp-worker.mjs` locally" story. If you see instructions
-pointing at any of those in older README revisions, ignore them.
-=======
 **What is not part of the architecture:** DigitalOcean droplets, Railway,
 Render, a developer laptop, a Codespace, `docker compose up`, or any
 "just run `node whatsapp-worker.mjs` locally" story. If you see instructions
@@ -44,7 +38,6 @@ It never runs the Next.js app, never runs cron, and never runs Postgres —
 those are Vercel and Supabase workloads. The worker is a single Docker
 container (`worker/Dockerfile`) with its session directory mounted on a
 persistent EBS volume.
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 
 ---
 
@@ -70,11 +63,7 @@ Required:
 
 Required once the worker is deployed:
 
-<<<<<<< HEAD
-- `WA_WORKER_URL` — the public URL of the worker (e.g. `https://matzhub-worker.fly.dev`)
-=======
 - `WA_WORKER_URL` — the public URL of the worker (e.g. `http://<EC2-IP>:8081`)
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 - `WA_WORKER_TOKEN` — must equal `WA_WORKER_TOKEN` on the worker side
 
 Optional (see `.env.example` for the full list and their effect if unset):
@@ -154,87 +143,6 @@ It **cannot** run on Vercel, Cloudflare Workers, or GitHub Actions cron — thos
 runtimes tear the process down and the session is lost. That is a WhatsApp
 protocol constraint, not a MatzHub design choice.
 
-<<<<<<< HEAD
-The only production-appropriate hosts are ones that give you a long-lived, persistent Node runtime with storage that survives process restarts. **Pick one** (do not run two):
-
-- **AWS EC2 (Recommended VM)** — Perfect for running the worker 24/7. An Amazon Linux / Ubuntu `t2.micro` or `t3.micro` instance (free tier) is exceptionally robust. You can run the worker directly under `pm2` (with auto-restart and system boot recovery) or via Docker.
-- **Fly.io (Recommended Serverless Container)** — Small free tier, Mumbai region (`bom`), ~$0-2/mo. The `worker/Dockerfile` targets this shape (exposes 8081, mounts `/data`, healthchecks `/health`).
-- Render, Northflank, Koyeb, or other persistent VM / Docker container providers.
-
-### Deploy to AWS EC2 (VM Example)
-
-EC2 provides a highly resilient, isolated virtual machine. By setting up the worker under **Docker** with restart policies, or under **PM2**, the worker automatically restarts if it crashes, and automatically recovers when the EC2 instance is rebooted.
-
-#### Option A: Running with Docker on EC2 (Easiest & Most Isolated)
-
-1. **Launch an EC2 Instance:**
-   - AMI: Ubuntu 22.04 LTS or Amazon Linux 2023.
-   - Instance Type: `t2.micro` or `t3.micro` (free tier).
-   - Security Group: Inbound TCP `8081` (port where worker listens) and SSH `22`.
-
-2. **Install Docker & Run:**
-   Connect via SSH to your instance and execute:
-   ```bash
-   sudo apt-get update && sudo apt-get install -y docker.io
-   sudo systemctl enable --now docker
-
-   # Run with auto-restart on failure or host reboot:
-   sudo docker run -d \
-     --name matzhub-worker \
-     --restart unless-stopped \
-     -p 8081:8081 \
-     -v /home/ubuntu/wa-session:/data/.wa-session \
-     -e MATZHUB_API_URL="https://matzhub.com" \
-     -e INGEST_TOKEN="<your_ingest_token>" \
-     -e WA_WORKER_PORT="8081" \
-     -e WA_WORKER_TOKEN="<your_worker_token>" \
-     -e SUPABASE_URL="https://yourproject.supabase.co" \
-     -e SUPABASE_SERVICE_ROLE_KEY="<your_service_role_key>" \
-     -e SUPABASE_BUCKET="products" \
-     -e SUPABASE_VIDEO_BUCKET="product-media" \
-     -e WA_SESSION_DIR="/data/.wa-session" \
-     nexly2025/matzhub-worker:latest  # Or build it locally from the cloned repo
-   ```
-
-#### Option B: Running with PM2 directly on EC2 (No Docker Required)
-
-1. **Install Node.js & PM2:**
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt-get install -y nodejs
-   sudo npm install -y -g pm2
-   ```
-
-2. **Clone the Repo & Configure:**
-   ```bash
-   git clone https://github.com/nexly2025-cell/MatzHub-.git
-   cd MatzHub-/worker
-   npm install --omit=dev
-   cp .env.example .env
-   # Edit .env with your production credentials
-   nano .env
-   ```
-
-3. **Start with PM2 & Configure System Recovery:**
-   Using PM2 guarantees the worker restarts instantly on crash, and system startup hook restores it on VM reboot.
-   ```bash
-   pm2 start whatsapp-worker.mjs --name "matzhub-worker"
-   
-   # Generate system startup configuration to survive VM reboots:
-   pm2 startup
-   # (Copy-paste the command printed by PM2 to enable the service)
-   
-   # Save the current process list so it recovers on boot:
-   pm2 save
-   ```
-
-4. **Verify Health:**
-   ```bash
-   curl http://localhost:8081/health
-   ```
-
-### Deploy to Fly.io (canonical example)
-=======
 The only production-appropriate hosts are ones that give you a long-lived Node
 container with mounted storage. **Pick one** (do not run two):
 
@@ -298,16 +206,11 @@ container with mounted storage. **Pick one** (do not run two):
    Session survives because the volume and the Supabase backup are untouched.
 
 ### Alternative: Fly.io
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 
 ```bash
 cd worker
 fly launch --no-deploy --name matzhub-worker --region <region>
 fly volumes create wa_session --size 1 --region <region>
-<<<<<<< HEAD
-# Mount the volume at /data and expose 8081 (fly.toml example below).
-=======
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 fly secrets set \
   MATZHUB_API_URL=https://matzhub.com \
   INGEST_TOKEN=<same as Vercel> \
@@ -320,53 +223,12 @@ fly secrets set \
 fly deploy
 ```
 
-<<<<<<< HEAD
-Minimum `fly.toml`:
-
-```toml
-app = "matzhub-worker"
-primary_region = "<region>"
-
-[build]
-  dockerfile = "Dockerfile"
-
-[env]
-  WA_SESSION_DIR = "/data/.wa-session"
-  WA_WORKER_PORT = "8081"
-
-[mounts]
-  source      = "wa_session"
-  destination = "/data"
-
-[[services]]
-  internal_port = 8081
-  protocol      = "tcp"
-
-  [[services.ports]]
-    port     = 443
-    handlers = ["tls", "http"]
-  [[services.ports]]
-    port     = 80
-    handlers = ["http"]
-
-  [services.http_checks]
-    interval = "30s"
-    method   = "GET"
-    path     = "/health"
-    timeout  = "5s"
-```
-
-After deploy, set on Vercel:
-
-- `WA_WORKER_URL=https://matzhub-worker.fly.dev`
-=======
 The checked-in `worker/fly.toml` has `auto_stop_machines = false` and
 `min_machines_running = 1` — required so Baileys keeps its socket.
 
 After deploy, set on Vercel:
 
 - `WA_WORKER_URL=http://<EC2-INSTANCE-IP>:8081` (or your domain once TLS is set up)
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 - `WA_WORKER_TOKEN=<same value as the worker>`
 
 Then in Telegram (admin bot): `/worker` shows connection state, `/qr` returns
@@ -378,12 +240,8 @@ pairing.
 The very first boot has no session in `wa-sessions/`, so the worker emits a QR.
 Options:
 
-<<<<<<< HEAD
-1. Fly SSH: `fly ssh console -C 'cat /data/.wa-session/whatsapp-qr.png' > qr.png`
-=======
 1. SSH: `ssh ec2-user@<INSTANCE-IP> 'sudo cat /var/lib/docker/volumes/matzhub-wa-data/_data/.wa-session/whatsapp-qr.png' > qr.png`
    (or `sudo docker cp matzhub-worker:/data/.wa-session/whatsapp-qr.png ./qr.png`)
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 2. Telegram: `/qr` returns the same PNG.
 3. Pairing code: set `WA_PAIRING_NUMBER=91XXXXXXXXXX`; the worker prints an
    8-digit code to enter under WhatsApp → Linked Devices → Link with phone.
@@ -436,11 +294,7 @@ If any of these fail, `OPS.md` → "Diagnosing" covers each one.
 ## What is NOT required
 
 - **No local machine 24/7.** The Vercel app is stateless; the worker runs on
-<<<<<<< HEAD
-  Fly.io (or equivalent); Supabase holds all state; Cloudflare + Vercel serve
-=======
   EC2 (or Fly.io); Supabase holds all state; Cloudflare + Vercel serve
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
   the edge. Turning off your laptop changes nothing in production.
 - **No docker-compose in production.** Compose is dev-only convenience and is
   not shipped in this repo.

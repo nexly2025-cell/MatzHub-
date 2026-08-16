@@ -8,11 +8,7 @@
 #     ./launch.sh doctor       report which env vars are configured
 #
 #  This script is dev-only. Production deployment is documented in
-<<<<<<< HEAD
-#  DEPLOYMENT.md (Vercel + Fly.io worker + Supabase + Cloudflare) and is
-=======
 #  DEPLOYMENT.md (Vercel + EC2 worker + Supabase + Cloudflare) and is
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 #  never a bare-metal `./launch.sh start` in a screen session.
 #
 #  Idempotent. Safe to run repeatedly.

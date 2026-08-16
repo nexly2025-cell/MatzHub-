@@ -126,14 +126,30 @@ async function answerCallback(bot: BotKind, id: string, text?: string) {
   }).catch(() => undefined);
 }
 
-async function deleteMessage(bot: BotKind, chatId: string, messageId: number) {
+/**
+ * Calls Telegram deleteMessage.
+ *
+ * Returns true when the message is gone (or was already gone — terminal
+ * errors: already deleted, older than Telegram's 48-hour deletion window,
+ * chat missing). Returns false on transient failures so the sweep retries
+ * the row instead of leaking the message permanently.
+ */
+async function deleteMessage(bot: BotKind, chatId: string, messageId: number): Promise<boolean> {
   const token = tokenFor(bot);
-  if (!token) return;
-  await fetch(API(token, "deleteMessage"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
-  }).catch(() => undefined);
+  if (!token) return false;
+  try {
+    const res = await fetch(API(token, "deleteMessage"), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (res.ok) return true;
+    if (res.status === 400 || res.status === 403) return true; // terminal
+    return false;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -202,9 +218,13 @@ async function expireLater(bot: BotKind, chatId: string, messageIds: Array<numbe
 /**
  * Deletes queued messages whose TTL has elapsed.
  *
- * Rows are dropped whether or not Telegram accepts the delete: a message the
- * operator removed by hand, or one older than Telegram's 48-hour deletion
- * window, must not be retried forever.
+ * One pass covers both bots: each row records the bot that sent it, and only
+ * that bot's token can delete the message.
+ *
+ * Rows are dropped ONLY when Telegram confirms the deletion (or the error is
+ * terminal — already deleted, or older than Telegram's 48-hour deletion
+ * window). Transient failures keep the row so the next sweep retries it; a
+ * dropped row for an undeleted message would leak it permanently.
  */
 export async function sweepExpiredMessages(): Promise<number> {
   const due = await db
@@ -216,9 +236,11 @@ export async function sweepExpiredMessages(): Promise<number> {
   let deleted = 0;
   for (const row of due) {
     const rowBot = (row.bot as BotKind) || "admin";
-    await deleteMessage(rowBot, row.chatId, row.messageId);
-    await db.delete(telegramEphemeral).where(eq(telegramEphemeral.id, row.id));
-    deleted += 1;
+    const gone = await deleteMessage(rowBot, row.chatId, row.messageId);
+    if (gone) {
+      await db.delete(telegramEphemeral).where(eq(telegramEphemeral.id, row.id));
+      deleted += 1;
+    }
   }
   return deleted;
 }

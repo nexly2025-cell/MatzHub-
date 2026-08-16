@@ -4,7 +4,8 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
 import { getCart, updateCartQty, removeFromCart, clearCart, subscribe, type CartItem } from "@/lib/client-store";
-import { SITE, inr, waLink } from "@/lib/utils";
+import { inr, waLink } from "@/lib/utils";
+import { buildOrderMessage } from "@/lib/order-message";
 
 export default function CartPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -47,29 +48,9 @@ export default function CartPage() {
     removeFromCart(item.id, item.variant);
   };
 
-  // Build a highly professional, beautifully formatted multi-product WhatsApp message
-  const buildWhatsAppMessage = () => {
-    let msg = `Hello MatzHub 👋\n\nI'd like to place an order:\n\n`;
-
-    cart.forEach((item, index) => {
-      msg += `${index + 1}. ${item.title}\n`;
-      if (item.variant) {
-        msg += `   Variant: ${item.variant}\n`;
-      }
-      msg += `   Qty: ${item.qty}\n`;
-      msg += `   Price: ${inr(item.price)} each\n`;
-      msg += `   SKU: ${item.sku}\n`;
-      msg += `   Link: ${SITE.url}/p/${item.slug}\n\n`;
-    });
-
-    msg += `Subtotal: ${inr(subtotal)}\n`;
-    msg += `Delivery: ${shippingCost === 0 ? "FREE" : inr(shippingCost)}\n`;
-    msg += `Total: ${inr(finalTotal)}\n\n`;
-    msg += `Delivery Address:\n[Please type your shipping address here (Name, Phone, Address)]\n\n`;
-    msg += `Thank you.`;
-
-    return msg;
-  };
+  // Single premium WhatsApp order builder — src/lib/order-message.ts (unit-tested,
+  // used by every surface; contains zero internal/supplier metadata).
+  const buildWhatsAppMessage = () => buildOrderMessage(cart);
 
   if (cart.length === 0) {
     return (

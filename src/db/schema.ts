@@ -584,7 +584,6 @@ export const telegramEphemeral = pgTable(
     bot: text("bot").notNull().default("admin"), // admin | dev — which bot token must delete the message
     chatId: text("chat_id").notNull(),
     messageId: integer("message_id").notNull(),
-    bot: text("bot").notNull().default("admin"), // "admin" | "dev"
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },

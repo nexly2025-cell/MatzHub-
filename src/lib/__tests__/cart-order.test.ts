@@ -3,7 +3,7 @@ import { buildOrderMessage } from "@/lib/order-message";
 import { cartTotals, type CartItem } from "@/lib/client-store";
 
 const watch: CartItem = {
-  productId: "p1",
+  id: "p1",
   slug: "watch",
   title: "Premium Steel Chronograph Watch",
   sku: "MH-W-001",
@@ -15,7 +15,7 @@ const watch: CartItem = {
 };
 
 const bag: CartItem = {
-  productId: "p2",
+  id: "p2",
   slug: "bag",
   title: "Classic Designer Shoulder Bag",
   sku: "MH-B-002",

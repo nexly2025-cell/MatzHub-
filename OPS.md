@@ -4,11 +4,7 @@ Day-to-day runbook. First-time deployment lives in `DEPLOYMENT.md`; this file
 assumes production is already up.
 
 Architecture in one sentence: **Vercel serves the app + APIs + cron, a
-<<<<<<< HEAD
-persistent Node worker (AWS EC2 / Fly.io / any Docker host) holds the Baileys WhatsApp
-=======
 persistent Node worker (EC2, or any Docker host) holds the Baileys WhatsApp
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 socket, Supabase is the database and storage, Cloudflare is DNS/TLS at the
 edge, Telegram is the operator control plane, and GitHub Actions handles CI +
 nightly backups.**
@@ -37,11 +33,7 @@ cd worker && npm install && node whatsapp-worker.mjs
 ```
 
 That worker is for local testing only. Production runs the same file, on
-<<<<<<< HEAD
-AWS EC2 or Fly.io, permanently. See `DEPLOYMENT.md` → "WhatsApp worker".
-=======
 on EC2, permanently. See `DEPLOYMENT.md` → "Deploy to EC2".
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 
 ---
 
@@ -260,18 +252,11 @@ Check state any time with `/payment` in the admin bot.
 ## Recovery procedures
 
 **Worker process is down** (`/worker` shows unreachable):
-<<<<<<< HEAD
-- AWS EC2 (PM2): `pm2 status`, `pm2 logs`, `pm2 restart matzhub-worker`.
-- Fly.io: `fly status -a matzhub-worker && fly logs -a matzhub-worker`.
-- Restart: `fly apps restart matzhub-worker` or `pm2 restart matzhub-worker` (or your host's equivalent).
-- Session persists in Supabase; no QR after restart.
-=======
 - SSH to the instance: `sudo docker ps -a` to see container state.
 - Restart: `sudo docker restart matzhub-worker`.
 - Container removed? Re-run the `docker run` command from `DEPLOYMENT.md`.
 - The session persists on the mounted volume AND in Supabase Storage, so a
   fresh container restores it without a QR.
->>>>>>> 4c2f0f5 (production: full audit consolidation — cart, Telegram 5-min delete fix, dev/admin separation, premium WhatsApp order, logo, worker + deploy fixes)
 
 **Worker running, connection state = "close" / "connecting" forever:**
 - `/relink` from Telegram admin → fresh QR → re-pair.
