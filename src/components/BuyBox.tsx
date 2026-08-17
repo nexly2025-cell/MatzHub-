@@ -57,6 +57,8 @@ export default function BuyBox({
 
   const off = savePercent(p.mrp, p.price);
   const soldOut = p.availability === "out_of_stock";
+  const selectedVariant = variants.find((v) => v.label === variant);
+  const unavailable = soldOut || selectedVariant?.stockQty === 0;
   const line = {
     productId: p.id,
     slug: p.slug,
@@ -161,7 +163,7 @@ export default function BuyBox({
         <button
           type="button"
           onClick={handleAddToCart}
-          disabled={soldOut}
+          disabled={unavailable}
           className="btn btn-solid mt-4 w-full bg-ink text-oninverse hover:opacity-90"
         >
           {addedSuccess ? "✓ Added to Cart!" : "Add to Cart"}
@@ -188,8 +190,8 @@ export default function BuyBox({
             <dd className="flex-1 text-ink">Pan-India, standard courier timing</dd>
           </div>
           <div className="flex gap-3">
-            <dt className="w-24 shrink-0 pt-0.5 text-[10px] uppercase tracking-[0.14em] text-subtle">Payment</dt>
-            <dd className="flex-1 text-ink">Cash on delivery or UPI</dd>
+            <dt className="w-24 shrink-0 pt-0.5 text-[10px] uppercase tracking-[0.14em] text-subtle">Order</dt>
+            <dd className="flex-1 text-ink">Details confirmed with our team on WhatsApp</dd>
           </div>
           <div className="flex gap-3">
             <dt className="w-24 shrink-0 pt-0.5 text-[10px] uppercase tracking-[0.14em] text-subtle">Replacement</dt>
@@ -240,7 +242,7 @@ export default function BuyBox({
           <button
             type="button"
             onClick={handleAddToCart}
-            disabled={soldOut}
+            disabled={unavailable}
             className="btn btn-solid h-12 flex-1 text-[14px] bg-ink text-oninverse hover:opacity-90"
           >
             {addedSuccess ? "✓ Added" : "Add to Cart"}

@@ -47,7 +47,7 @@ export async function GET() {
     );
   } catch (error) {
     return NextResponse.json(
-      { status: "error", error: error instanceof Error ? error.message : "monitoring failed", latencyMs: Date.now() - t0 },
+      { status: "error", error: "monitoring unavailable", latencyMs: Date.now() - t0 },
       { status: 503, headers: { "Cache-Control": "no-store" } },
     );
   }

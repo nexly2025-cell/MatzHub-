@@ -29,12 +29,10 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 async function saveQr(qr) {
   const qrPng = path.join(CONFIG.sessionDir, "whatsapp-qr.png");
-  const qrAscii = await QRCode.toString(qr, { type: "terminal", small: true });
-  console.log(qrAscii);
   const buffer = await QRCode.toBuffer(qr, { type: "png", width: 400 });
   await fs.promises.mkdir(path.dirname(qrPng), { recursive: true });
   await fs.promises.writeFile(qrPng, buffer);
-  console.log(`WhatsApp QR saved to ${qrPng}`);
+  log("qr_png_saved", { path: qrPng });
 }
 
 const CONFIG = {
@@ -412,7 +410,7 @@ async function start() {
   sock = makeWASocket({
     version,
     auth: state,
-    printQRInTerminal: !usePairingCode,
+    printQRInTerminal: false,
     syncFullHistory: wantHistory,
     markOnlineOnConnect: false,
     browser: ["MatzHub Worker", "Chrome", "1.0.0"],

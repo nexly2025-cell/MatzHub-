@@ -30,7 +30,7 @@ export async function GET() {
     });
   } catch (error) {
     return NextResponse.json(
-      { status: "error", database: "unreachable", error: error instanceof Error ? error.message : "unknown" },
+      { status: "error", database: "unreachable", error: "database unavailable" },
       { status: 503 },
     );
   }

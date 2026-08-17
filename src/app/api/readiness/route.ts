@@ -16,6 +16,6 @@ export async function GET() {
       .then((r) => r.rows);
     return NextResponse.json({ status: "ready", products: published, latencyMs: Date.now() - t0 });
   } catch (error) {
-    return NextResponse.json({ status: "not-ready", error: error instanceof Error ? error.message : "db unavailable" }, { status: 503 });
+    return NextResponse.json({ status: "not-ready", error: "database unavailable" }, { status: 503 });
   }
 }

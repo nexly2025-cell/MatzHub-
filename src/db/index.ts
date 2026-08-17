@@ -1,19 +1,14 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-// Fallback to real Supabase database if local localhost/127.0.0.1 is injected by sandbox preview
-const databaseUrl =
-  process.env.DATABASE_URL &&
-  (process.env.DATABASE_URL.includes("127.0.0.1") || process.env.DATABASE_URL.includes("localhost"))
-    ? "postgresql://postgres.wfzdccgdpzebpviqasli:l7Pa8Dlti2jgzsEm@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
-    : process.env.DATABASE_URL || "postgresql://postgres.wfzdccgdpzebpviqasli:l7Pa8Dlti2jgzsEm@aws-0-ap-south-1.pooler.supabase.com:5432/postgres";
+const databaseUrl = process.env.DATABASE_URL;
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
 }
 
 const globalForDb = globalThis as typeof globalThis & {
-  __arenaNextJsPostgresqlPool?: Pool;
+  __matzhubPostgresqlPool?: Pool;
 };
 
 /**
@@ -49,7 +44,7 @@ const useSsl = (() => {
 })();
 
 export const pool =
-  globalForDb.__arenaNextJsPostgresqlPool ??
+  globalForDb.__matzhubPostgresqlPool ??
   new Pool({
     connectionString: databaseUrl,
     max: Number(process.env.DATABASE_POOL_MAX || 4),
@@ -61,7 +56,7 @@ export const pool =
   });
 
 if (process.env.NODE_ENV !== "production") {
-  globalForDb.__arenaNextJsPostgresqlPool = pool;
+  globalForDb.__matzhubPostgresqlPool = pool;
 }
 
 export const db = drizzle(pool);

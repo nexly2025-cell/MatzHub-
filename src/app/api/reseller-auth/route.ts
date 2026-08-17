@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import crypto from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, desc, eq, gt, isNull, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { resellers, users } from "@/db/schema";
+import { otpCodes, resellers, users } from "@/db/schema";
 import { RESELLER_COOKIE, issueToken } from "@/lib/auth";
 import { clientKey, rateLimit } from "@/lib/rate-limit";
 
@@ -20,13 +20,32 @@ export async function POST(request: Request) {
   }
   const phoneRef = phone.replace(/\D/g, "");
 
-  // Dev bootstrap path: first reseller can self-onboard without an OTP service configured.
-  const requireOtp = Boolean(process.env.TWILIO_AUTH_TOKEN || process.env.TEXT_LOCAL_KEY);
-  if (requireOtp) {
-    const { otpCodes } = await import("@/db/schema");
-    const [code] = await db.select().from(otpCodes).where(eq(otpCodes.phone, phoneRef)).orderBy(sql`created_at desc`).limit(1).catch(() => []);
-    if (!code || code.codeHash !== sha(body.otp ?? "")) return NextResponse.json({ ok: false, error: "Invalid OTP" }, { status: 401 });
-    await db.update(otpCodes).set({ consumedAt: new Date() }).where(eq(otpCodes.id, code.id));
+  const otpEnabled = Boolean(process.env.TWILIO_AUTH_TOKEN || process.env.TEXT_LOCAL_KEY);
+  if (!otpEnabled && process.env.NODE_ENV === "production") {
+    // Issuing a reseller cookie from only a claimed phone number would let any
+    // visitor assume another reseller's identity. Production must fail closed.
+    return NextResponse.json({ ok: false, error: "Reseller verification is temporarily unavailable" }, { status: 503 });
+  }
+
+  if (otpEnabled) {
+    const [code] = await db
+      .select()
+      .from(otpCodes)
+      .where(and(eq(otpCodes.phone, phoneRef), isNull(otpCodes.consumedAt), gt(otpCodes.expiresAt, new Date())))
+      .orderBy(desc(otpCodes.createdAt))
+      .limit(1);
+
+    if (!code || code.attempts >= 5 || code.codeHash !== sha(body.otp ?? "")) {
+      if (code && code.attempts < 5) {
+        await db.update(otpCodes).set({ attempts: sql`${otpCodes.attempts} + 1` }).where(eq(otpCodes.id, code.id));
+      }
+      return NextResponse.json({ ok: false, error: "Invalid OTP" }, { status: 401 });
+    }
+
+    await db
+      .update(otpCodes)
+      .set({ consumedAt: new Date() })
+      .where(and(eq(otpCodes.id, code.id), isNull(otpCodes.consumedAt)));
   }
 
   const [existing] = await db.select().from(resellers).where(eq(resellers.phone, phoneRef)).limit(1);

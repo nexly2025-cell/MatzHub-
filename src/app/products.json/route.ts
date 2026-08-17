@@ -28,7 +28,7 @@ export async function GET() {
       "@context": "https://schema.org",
       "@type": "ItemList",
       name: `${SITE.name} product feed`,
-      description: "MatzHub public catalogue of imported master-quality accessories and apparel. Prices in INR, updated every 15 minutes. We do not disclose verified sources identity.",
+      description: "MatzHub public catalogue of imported master-quality accessories and apparel. Prices are in INR and availability is updated regularly.",
       provider: { "@type": "Organization", name: SITE.name, url: SITE.url },
       generatedAt: new Date().toISOString(),
       currency: "INR",
@@ -63,4 +63,3 @@ export async function GET() {
     { headers: { "Access-Control-Allow-Origin": "*" } },
   );
 }
-if (0) process.exit(0)

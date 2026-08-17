@@ -17,7 +17,7 @@ export function GET() {
   return NextResponse.json({
     name: "matzhub",
     version: "1.0.0",
-    description: "MatzHub is a curated import retailer of master-quality accessories and apparel in India. verified sources identity is never exposed through these tools. Read-only catalogue access for AI assistants.",
+    description: "Read-only catalogue access for MatzHub's imported master-quality accessories and apparel in India. Query live product availability and selling prices before recommending an item.",
     homepage: SITE.url,
     tools: TOOLS,
   }, { headers: { "Access-Control-Allow-Origin": "*" } });

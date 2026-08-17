@@ -3,8 +3,9 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import Image from "next/image";
-import { getCart, updateCartQty, removeFromCart, clearCart, subscribe, type CartItem } from "@/lib/client-store";
-import { SITE, inr, waLink } from "@/lib/utils";
+import { cartTotals, clearCart, getCart, removeFromCart, subscribe, type CartItem, updateCartQty } from "@/lib/client-store";
+import { buildOrderMessage } from "@/lib/order-message";
+import { inr, waLink } from "@/lib/utils";
 
 export default function CartPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -33,11 +34,7 @@ export default function CartPage() {
     );
   }
 
-  const subtotal = cart.reduce((acc, item) => acc + item.price * item.qty, 0);
-  const originalSubtotal = cart.reduce((acc, item) => acc + (item.mrp || item.price) * item.qty, 0);
-  const totalSavings = originalSubtotal - subtotal;
-  const shippingCost = subtotal === 0 ? 0 : subtotal >= 999 ? 0 : 59;
-  const finalTotal = subtotal + shippingCost;
+  const { subtotal, mrpTotal: originalSubtotal, savings: totalSavings, delivery: shippingCost, total: finalTotal } = cartTotals(cart);
 
   const handleQtyChange = (item: CartItem, newQty: number) => {
     updateCartQty(item.id, item.variant, newQty);
@@ -45,30 +42,6 @@ export default function CartPage() {
 
   const handleRemove = (item: CartItem) => {
     removeFromCart(item.id, item.variant);
-  };
-
-  // Build a highly professional, beautifully formatted multi-product WhatsApp message
-  const buildWhatsAppMessage = () => {
-    let msg = `Hello MatzHub 👋\n\nI'd like to place an order:\n\n`;
-
-    cart.forEach((item, index) => {
-      msg += `${index + 1}. ${item.title}\n`;
-      if (item.variant) {
-        msg += `   Variant: ${item.variant}\n`;
-      }
-      msg += `   Qty: ${item.qty}\n`;
-      msg += `   Price: ${inr(item.price)} each\n`;
-      msg += `   SKU: ${item.sku}\n`;
-      msg += `   Link: ${SITE.url}/p/${item.slug}\n\n`;
-    });
-
-    msg += `Subtotal: ${inr(subtotal)}\n`;
-    msg += `Delivery: ${shippingCost === 0 ? "FREE" : inr(shippingCost)}\n`;
-    msg += `Total: ${inr(finalTotal)}\n\n`;
-    msg += `Delivery Address:\n[Please type your shipping address here (Name, Phone, Address)]\n\n`;
-    msg += `Thank you.`;
-
-    return msg;
   };
 
   if (cart.length === 0) {
@@ -203,19 +176,19 @@ export default function CartPage() {
           </div>
 
           <a
-            href={waLink(buildWhatsAppMessage())}
+            href={waLink(buildOrderMessage(cart))}
             target="_blank"
             rel="noopener noreferrer"
             className="btn btn-whatsapp w-full py-3 h-auto text-[15px] font-semibold text-center flex items-center justify-center gap-2 mt-4 shadow-sm"
           >
-            Checkout on WhatsApp
+            Confirm on WhatsApp
           </a>
 
           <div className="rounded-lg border border-line p-3 text-[11px] text-muted leading-relaxed space-y-1 bg-surface-2">
             <p className="font-medium text-ink flex items-center gap-1">
-              <span className="text-accent">✓</span> Cash on Delivery / UPI
+              <span className="text-accent">✓</span> Availability confirmed by our team
             </p>
-            <p>Order is finalized in conversation with our team on WhatsApp. You get a tracking ID once shipped.</p>
+            <p>Send your order on WhatsApp and our team will confirm the item, delivery details, and next steps before dispatch.</p>
           </div>
         </div>
       </div>

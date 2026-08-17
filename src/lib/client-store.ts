@@ -46,6 +46,7 @@ function write<T>(key: string, value: T) {
   } catch {
     /* quota */
   }
+  if (key === CART_KEY) syncCart(value as CartItem[]);
   emit();
 }
 
@@ -77,17 +78,43 @@ export function pushRecent(productId: string) {
 }
 
 /* ---------- shopping cart ---------- */
+export function cartTotals(cart: CartItem[]) {
+  const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
+  const mrpTotal = cart.reduce((sum, item) => sum + item.mrp * item.qty, 0);
+  const savings = mrpTotal - subtotal;
+  const delivery = subtotal === 0 || subtotal >= 999 ? 0 : 59;
+
+  return { subtotal, mrpTotal, savings, delivery, total: subtotal + delivery };
+}
+
+function syncCart(items: CartItem[]) {
+  // Test and server shims can provide localStorage without a document. A cart
+  // mirror is meaningful only in a real browser where the anonymous cookie can
+  // be established alongside the request.
+  if (typeof window === "undefined" || typeof document === "undefined") return;
+  const body = JSON.stringify({
+    items: items.map((item) => ({ productId: item.id, qty: item.qty, variant: item.variant })),
+  });
+  void fetch("/api/cart/sync", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "x-mh-anon": anonId() },
+    body,
+    keepalive: true,
+  }).catch(() => undefined);
+}
+
 export const getCart = () => read<CartItem[]>(CART_KEY, []);
 
 export function addToCart(item: CartItem) {
   const cart = getCart();
+  const qty = Math.max(1, Math.min(10, item.qty));
   const existing = cart.find(
     (i) => i.id === item.id && i.variant === item.variant
   );
   if (existing) {
-    existing.qty += item.qty;
+    existing.qty = Math.min(10, existing.qty + qty);
   } else {
-    cart.push(item);
+    cart.push({ ...item, qty });
   }
   write(CART_KEY, cart);
 }
@@ -98,7 +125,7 @@ export function updateCartQty(id: string, variant: string | undefined, qty: numb
     cart = cart.filter((i) => !(i.id === id && i.variant === variant));
   } else {
     const item = cart.find((i) => i.id === id && i.variant === variant);
-    if (item) item.qty = qty;
+    if (item) item.qty = Math.min(10, Math.floor(qty));
   }
   write(CART_KEY, cart);
 }

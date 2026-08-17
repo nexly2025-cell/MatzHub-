@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, ne } from "drizzle-orm";
 import { db } from "@/db";
 import { cartItems, carts, products } from "@/db/schema";
 import { clientKey, rateLimit } from "@/lib/rate-limit";
@@ -7,73 +7,87 @@ import { clientKey, rateLimit } from "@/lib/rate-limit";
 export const dynamic = "force-dynamic";
 
 /**
- * Cart persistence for the cart-recovery cron.
+ * Best-effort cart mirror for recovery and operations analytics.
  *
- * The cart itself lives in localStorage — the customer sees instant, offline
- * behaviour and nothing here blocks the UI. This endpoint is a best-effort
- * mirror of the open cart into the `carts`/`cart_items` tables so the hourly
- * cart-recovery job (and admin analytics) can see abandoned carts.
- *
- * Anonymous by design (no PII beyond the anon id). Rate-limited per IP;
- * failures are ignored by the client.
+ * The customer cart remains local-first in browser storage. This endpoint only
+ * stores a server-validated snapshot and must never block browsing or imply
+ * that an order has been placed.
  */
+type CartLine = { productId?: unknown; qty?: unknown; variant?: unknown };
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
 export async function POST(request: Request) {
   const ip = clientKey(request);
   const rl = rateLimit(`cart-sync:${ip}`, { max: 30, windowMs: 60_000 });
-  if (!rl.ok) {
-    return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
-  }
+  if (!rl.ok) return NextResponse.json({ ok: false, error: "rate_limited" }, { status: 429 });
 
-  let body: { items?: Array<{ productId?: string; qty?: number; variant?: string }> };
+  const anonId = request.headers.get("x-mh-anon")?.trim() ?? "";
+  if (!UUID.test(anonId)) return NextResponse.json({ ok: false, error: "invalid_cart_identity" }, { status: 400 });
+
+  let body: { items?: CartLine[] };
   try {
-    body = await request.json();
+    body = (await request.json()) as { items?: CartLine[] };
   } catch {
     return NextResponse.json({ ok: false, error: "invalid_json" }, { status: 400 });
   }
 
-  const items = (body.items ?? []).filter((i) => i?.productId && Number.isFinite(i.qty)).slice(0, 50);
-  if (!items.length) return NextResponse.json({ ok: true, synced: 0 });
-
-  // Resolve current prices from the products table — never trust client
-  // prices in storage, only the cart display uses them.
-  const ids = [...new Set(items.map((i) => i.productId!))];
-  const rows = await db
-    .select({ id: products.id, price: products.price })
-    .from(products)
-    .where(inArray(products.id, ids));
-  const priceBy = new Map(rows.map((r) => [r.id, r.price]));
+  const items = (Array.isArray(body.items) ? body.items : [])
+    .filter((item): item is { productId: string; qty: number; variant?: string } =>
+      typeof item?.productId === "string" && UUID.test(item.productId) &&
+      typeof item.qty === "number" && Number.isFinite(item.qty) && item.qty > 0,
+    )
+    .slice(0, 50);
 
   try {
-    const anonId = request.headers.get("x-mh-anon") || "anonymous";
-    const [cart] = await db
-      .insert(carts)
-      .values({ anonId, status: "open", updatedAt: new Date() })
-      .onConflictDoNothing()
-      .returning({ id: carts.id });
-    const existing = cart
-      ? cart
-      : (await db.select({ id: carts.id }).from(carts).where(and(eq(carts.anonId, anonId), eq(carts.status, "open"))).orderBy(carts.updatedAt).limit(1))[0];
-    if (!existing) return NextResponse.json({ ok: false, error: "no_cart" }, { status: 500 });
+    if (!items.length) {
+      // An intentional clear must not later produce an abandoned-cart reminder.
+      await db.delete(carts).where(and(eq(carts.anonId, anonId), eq(carts.status, "open")));
+      return NextResponse.json({ ok: true, synced: 0 });
+    }
 
-    // Replace the previous snapshot for this cart (single open cart per anon).
-    // Only mirror lines whose product still exists — a stale/removed product
-    // id must never fail the whole mirror.
-    const validItems = items.filter((i) => priceBy.has(i.productId!));
-    await db.delete(cartItems).where(eq(cartItems.cartId, existing.id));
+    // Resolve live price and availability from Postgres. Client storage is only
+    // a display cache and can contain archived or modified values.
+    const ids = [...new Set(items.map((item) => item.productId))];
+    const rows = await db
+      .select({ id: products.id, price: products.price })
+      .from(products)
+      .where(and(inArray(products.id, ids), eq(products.status, "published"), ne(products.availability, "out_of_stock")));
+    const priceById = new Map(rows.map((row) => [row.id, row.price]));
+    const validItems = items.filter((item) => priceById.has(item.productId));
+
+    // Reuse the active snapshot. The schema deliberately permits historical
+    // carts, so there is no unsafe global anonymous-cart uniqueness assumption.
+    let [cart] = await db
+      .select({ id: carts.id })
+      .from(carts)
+      .where(and(eq(carts.anonId, anonId), eq(carts.status, "open")))
+      .orderBy(desc(carts.updatedAt))
+      .limit(1);
+
+    if (!cart) {
+      [cart] = await db
+        .insert(carts)
+        .values({ anonId, status: "open", updatedAt: new Date() })
+        .returning({ id: carts.id });
+    }
+
+    await db.delete(cartItems).where(eq(cartItems.cartId, cart.id));
     if (validItems.length) {
       await db.insert(cartItems).values(
-        validItems.map((i) => ({
-          cartId: existing.id,
-          productId: i.productId!,
-          qty: Math.max(1, Math.min(10, i.qty!)),
-          unitPrice: priceBy.get(i.productId!) ?? 0,
+        validItems.map((item) => ({
+          cartId: cart.id,
+          productId: item.productId,
+          qty: Math.max(1, Math.min(10, Math.floor(item.qty))),
+          unitPrice: priceById.get(item.productId) ?? 0,
         })),
       );
     }
-    await db.update(carts).set({ updatedAt: new Date() }).where(eq(carts.id, existing.id));
-    return NextResponse.json({ ok: true, synced: validItems.length, cartId: existing.id });
+    await db.update(carts).set({ updatedAt: new Date() }).where(eq(carts.id, cart.id));
+
+    return NextResponse.json({ ok: true, synced: validItems.length, cartId: cart.id });
   } catch {
-    // The cart page must never break because the mirror failed.
-    return NextResponse.json({ ok: true, synced: 0, note: "mirror skipped" });
+    // Recovery telemetry is optional. Never let a transient database failure
+    // interrupt a local cart interaction.
+    return NextResponse.json({ ok: true, synced: 0, note: "mirror_unavailable" });
   }
 }
