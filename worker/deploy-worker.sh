@@ -44,6 +44,10 @@ command -v docker >/dev/null || die "docker is not installed"
 docker info >/dev/null 2>&1 || die "cannot talk to the docker daemon (need sudo, or add yourself to the docker group)"
 [[ -f "$ENV_FILE" ]] || die "missing env file: $ENV_FILE  (copy .env.example and fill it in)"
 
+# Read GITHUB_TOKEN (optional) without exporting the whole file into the shell.
+GITHUB_TOKEN="$(sed -n 's/^GITHUB_TOKEN=//p' "$ENV_FILE" | tail -1)"
+export GITHUB_TOKEN
+
 # Secrets must never end up in the deploy log.
 for required in MATZHUB_API_URL INGEST_TOKEN WA_WORKER_TOKEN; do
   grep -qE "^${required}=.+" "$ENV_FILE" || die "$required is empty in $ENV_FILE"
@@ -54,7 +58,17 @@ ok "environment file validated (values not printed)"
 if git rev-parse --git-dir >/dev/null 2>&1; then
   BRANCH="$(git rev-parse --abbrev-ref HEAD)"
   log "pulling origin/$BRANCH"
-  git pull --ff-only origin "$BRANCH"
+  # A PRIVATE repository cannot be pulled anonymously. Set GITHUB_TOKEN in
+  # worker/.env (a fine-grained PAT with read-only Contents on this repo) and
+  # the pull authenticates over HTTPS without the token ever being written to
+  # .git/config, the remote URL, or the shell history.
+  if [ -n "${GITHUB_TOKEN:-}" ]; then
+    git -c credential.helper= \
+        -c http.extraheader="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 -w0)" \
+        pull --ff-only origin "$BRANCH"
+  else
+    git pull --ff-only origin "$BRANCH" || die "pull failed — if this repository is private, set GITHUB_TOKEN in worker/.env"
+  fi
   ok "at $(git rev-parse --short HEAD) on $BRANCH"
 else
   warn "not a git checkout — building the working tree as-is"
