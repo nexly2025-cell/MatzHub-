@@ -438,7 +438,7 @@ export function parseCommand(text: string | undefined | null): { command: string
 /** Must stay in sync with JOBS in src/app/api/cron/[job]/route.ts. */
 export const RUNNABLE_JOBS = [
   "stock-sync", "watchdog", "self-heal", "reprice", "notify", "notify-retry",
-  "trending", "expire", "supplier", "price-alerts", "cart-recovery", "digest",
+  "trending", "expire", "supplier", "cart-recovery", "digest",
   "subscription", "telegram-sweep", "storage-sweep",
 ] as const;
 

@@ -83,18 +83,6 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     });
   };
 
-  // Hard isolation: a dedicated ingestion SIM that only receives supplier group
-  // messages, never sends, and never sits in the customer channel. This number
-  // is never rendered publicly — SECTION 1 in the ops runbook.
-  const SUPPLIER_INGESTION_NUMBER = process.env.SUPPLIER_INGESTION_NUMBER;
-  if (SUPPLIER_INGESTION_NUMBER && msg.groupId) {
-    const digits = msg.groupId.replace(/\D/g, "");
-    if (digits && digits !== SUPPLIER_INGESTION_NUMBER.replace(/\D/g, "").slice(-10)) {
-      await log("rejected", { error: `message arrived from group not mapped to ingestion SIM ${SUPPLIER_INGESTION_NUMBER.slice(-4)}` });
-      return { messageId: msg.messageId, stage: "rejected", reason: "wrong ingestion channel" };
-    }
-  }
-
   // ---- 0. guard rails -------------------------------------------------
   if (!caption && !msg.imageUrl) {
     await log("rejected", { error: "empty message" });

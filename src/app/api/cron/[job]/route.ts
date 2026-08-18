@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { and, eq, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { automationRuns, carts, ingestionEvents, notifications, opsTasks, priceAlerts, products, settings } from "@/db/schema";
+import { automationRuns, carts, ingestionEvents, notifications, opsTasks, products, settings } from "@/db/schema";
 import { runExpiryJob, runSupplierScoreJob, runTrendingJob } from "@/lib/ingest";
 import { relativeTime } from "@/lib/utils";
 import { dispatchNotifications, retryFailedNotifications } from "@/lib/notify";
@@ -13,7 +13,6 @@ import { pendingAdminNotice, reconcileSubscription } from "@/lib/subscription";
  *   /api/cron/trending      every 30 min
  *   /api/cron/expire        hourly
  *   /api/cron/supplier      daily 02:00 IST
- *   /api/cron/price-alerts  hourly
  *   /api/cron/cart-recovery hourly
  *   /api/cron/digest        daily 08:00 IST
  */
@@ -29,39 +28,17 @@ function authorized(request: Request) {
   );
 }
 
-async function priceAlertJob() {
-  const due = await db
-    .select({ id: priceAlerts.id, productId: priceAlerts.productId, phone: priceAlerts.phone, target: priceAlerts.targetPrice, price: products.price, title: products.title, slug: products.slug })
-    .from(priceAlerts)
-    .innerJoin(products, eq(products.id, priceAlerts.productId))
-    .where(and(isNull(priceAlerts.notifiedAt), lte(products.price, priceAlerts.targetPrice)))
-    .limit(500);
-
-  for (const d of due) {
-    await db.insert(notifications).values({
-      channel: d.phone ? "whatsapp" : "push",
-      recipient: d.phone ?? "anon",
-      template: "price_drop",
-      payload: { title: d.title, slug: d.slug, price: d.price, target: d.target },
-    });
-    await db.update(priceAlerts).set({ notifiedAt: new Date() }).where(eq(priceAlerts.id, d.id));
-  }
-  return { notified: due.length };
-}
-
 async function cartRecoveryJob() {
   const stale = await db
     .update(carts)
     .set({ status: "abandoned", recoveryNudgedAt: new Date() })
     .where(and(eq(carts.status, "open"), isNull(carts.recoveryNudgedAt), sql`${carts.updatedAt} < now() - interval '4 hours'`))
-    .returning({ id: carts.id, anonId: carts.anonId });
+    .returning({ id: carts.id });
 
-  if (stale.length) {
-    await db.insert(notifications).values(
-      stale.map((c) => ({ channel: "push" as const, recipient: c.anonId, template: "cart_recovery", payload: { cartId: c.id } })),
-    );
-  }
-  return { nudged: stale.length };
+  // No browser-push provider is part of the production architecture. Marking
+  // the cart keeps recovery analytics accurate without promising a message the
+  // system cannot deliver.
+  return { markedAbandoned: stale.length };
 }
 
 async function digestJob() {
@@ -322,7 +299,6 @@ const JOBS: Record<string, () => Promise<Record<string, number>>> = {
   trending: runTrendingJob,
   expire: runExpiryJob,
   supplier: runSupplierScoreJob,
-  "price-alerts": priceAlertJob,
   "cart-recovery": cartRecoveryJob,
   digest: digestJob,
 };

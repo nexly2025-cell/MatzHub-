@@ -175,20 +175,26 @@ export default function CartPage() {
             <span className="font-display text-[26px] font-black text-ink">{inr(finalTotal)}</span>
           </div>
 
+          <Link
+            href="/checkout"
+            className="btn btn-solid w-full py-3 h-auto text-[15px] font-semibold text-center flex items-center justify-center gap-2 mt-4 shadow-sm"
+          >
+            Continue to delivery details
+          </Link>
           <a
             href={waLink(buildOrderMessage(cart))}
             target="_blank"
             rel="noopener noreferrer"
-            className="btn btn-whatsapp w-full py-3 h-auto text-[15px] font-semibold text-center flex items-center justify-center gap-2 mt-4 shadow-sm"
+            className="mt-4 block text-center text-[12px] text-muted underline underline-offset-4 hover:text-ink"
           >
-            Confirm on WhatsApp
+            Prefer to order on WhatsApp?
           </a>
 
           <div className="rounded-lg border border-line p-3 text-[11px] text-muted leading-relaxed space-y-1 bg-surface-2">
             <p className="font-medium text-ink flex items-center gap-1">
               <span className="text-accent">✓</span> Availability confirmed by our team
             </p>
-            <p>Send your order on WhatsApp and our team will confirm the item, delivery details, and next steps before dispatch.</p>
+            <p>We’ll confirm stock and delivery details before dispatch. No payment is taken on this website.</p>
           </div>
         </div>
       </div>

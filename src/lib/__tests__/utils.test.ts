@@ -2,15 +2,15 @@ import { describe, expect, it } from "vitest";
 import { inr, orderNo, savePercent } from "@/lib/utils";
 
 describe("orderNo", () => {
-  it("keeps the MH + YYMMDD + 4 hex format", () => {
-    // Locked because order numbers are printed on invoices and used as a
-    // customer-facing lookup key in /track. Changing the shape breaks both.
-    expect(orderNo()).toMatch(/^MH\d{6}[0-9A-F]{4}$/);
+  it("keeps the MH + YYMMDD + 10 hex format", () => {
+    // The readable prefix remains compatible with invoices; the larger suffix
+    // makes collisions impractical as order volume grows.
+    expect(orderNo()).toMatch(/^MH\d{6}[0-9A-F]{10}$/);
   });
 
   it("does not collide across a small burst", () => {
     const seen = new Set(Array.from({ length: 500 }, () => orderNo()));
-    // 2 random bytes = 65 536 space; 500 draws should stay overwhelmingly unique.
+    // 5 random bytes gives more than one trillion possible suffixes per day.
     expect(seen.size).toBeGreaterThan(490);
   });
 });

@@ -33,9 +33,6 @@ export default function BuyBox({
   const [variant, setVariant] = useState(variants[0]?.label ?? "");
   const [qty, setQty] = useState(1);
   const [saved, setSaved] = useState(false);
-  const [alertOpen, setAlertOpen] = useState(false);
-  const [alertPrice, setAlertPrice] = useState(Math.round(p.price * 0.85));
-  const [alertDone, setAlertDone] = useState(false);
   const [addedSuccess, setAddedSuccess] = useState(false);
 
   const handleAddToCart = () => {
@@ -59,15 +56,6 @@ export default function BuyBox({
   const soldOut = p.availability === "out_of_stock";
   const selectedVariant = variants.find((v) => v.label === variant);
   const unavailable = soldOut || selectedVariant?.stockQty === 0;
-  const line = {
-    productId: p.id,
-    slug: p.slug,
-    title: p.title,
-    image: p.heroImage,
-    price: p.price,
-    mrp: p.mrp,
-    variant: variant || undefined,
-  };
 
   useEffect(() => {
     pushRecent(p.id);
@@ -81,20 +69,6 @@ export default function BuyBox({
     const on = toggleWishlist(p.id);
     setSaved(on);
     track(on ? "add_to_wishlist" : "remove_from_wishlist", { productId: p.id });
-  };
-
-  const submitAlert = async () => {
-    try {
-      await fetch("/api/price-alerts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ productId: p.id, targetPrice: alertPrice }),
-      });
-    } catch {
-      /* alert persistence optional */
-    }
-    setAlertDone(true);
-    track("create_price_alert", { productId: p.id, value: alertPrice });
   };
 
   return (
@@ -210,22 +184,6 @@ export default function BuyBox({
             <span className="text-accent" aria-hidden>✓</span>
             Not as shown? Replaced free. No forms.
           </p>
-        </div>
-
-        <div className="mt-4">
-          {!alertOpen ? (
-            <button type="button" onClick={() => setAlertOpen(true)} className="text-[12px] text-muted underline underline-offset-4 hover:text-ink">
-              Notify me if the price drops
-            </button>
-          ) : alertDone ? (
-            <p className="text-[12px] text-accent">Done. We&apos;ll ping you when it hits {inr(alertPrice)}.</p>
-          ) : (
-            <div className="flex gap-2">
-              <label htmlFor="target-price" className="sr-only">Target price</label>
-              <input id="target-price" type="number" value={alertPrice} onChange={(e) => setAlertPrice(Number(e.target.value))} className="field py-2 text-sm" />
-              <button type="button" onClick={submitAlert} className="btn btn-outline shrink-0 px-4 py-2 text-[11px]">Set alert</button>
-            </div>
-          )}
         </div>
 
         {shareKit}

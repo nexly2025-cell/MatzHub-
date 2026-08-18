@@ -40,16 +40,17 @@ export async function POST(request: Request) {
     ? (payload as { messages: RawMessage[] }).messages
     : [payload as RawMessage];
 
-  // Hard isolation: only messages from supplier groups mapped to the dedicated
-  // ingestion SIM flow through. Any message claiming to be from the customer
-  // number or any non-group source is rejected. See SECTION 1 in the ops runbook.
-  const ingestionNumber = process.env.SUPPLIER_INGESTION_NUMBER;
-  if (ingestionNumber) {
-    const suffix = ingestionNumber.replace(/\D/g, "").slice(-10);
-    for (const m of messages) {
-      const g = m && typeof m === "object" ? (m as { groupId?: string }).groupId : "";
-      if (g && !g.includes(suffix)) {
-        return NextResponse.json({ ok: false, error: `Supplied group not authorized for ingestion channel ${ingestionNumber.slice(-4)}` }, { status: 403 });
+  // Hard isolation: WhatsApp group JIDs, not phone-number suffixes, are the
+  // authoritative source boundary. The worker applies the same allow-list.
+  const allowedGroupIds = (process.env.WA_GROUP_IDS ?? "").split(",").map((group) => group.trim()).filter(Boolean);
+  if (process.env.NODE_ENV === "production" && !allowedGroupIds.length) {
+    return NextResponse.json({ ok: false, error: "ingestion_group_allowlist_unconfigured" }, { status: 503 });
+  }
+  if (allowedGroupIds.length) {
+    for (const message of messages) {
+      const groupId = message && typeof message === "object" ? (message as { groupId?: string }).groupId : "";
+      if (!groupId || !allowedGroupIds.includes(groupId)) {
+        return NextResponse.json({ ok: false, error: "group_not_authorized" }, { status: 403 });
       }
     }
   }

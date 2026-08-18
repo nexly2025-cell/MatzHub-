@@ -85,7 +85,7 @@ describe("job allowlist", () => {
     expect([...RUNNABLE_JOBS].sort()).toEqual(
       [
         "cart-recovery", "digest", "expire", "notify", "notify-retry",
-        "price-alerts", "reprice", "self-heal", "stock-sync", "subscription",
+        "reprice", "self-heal", "stock-sync", "subscription",
         "storage-sweep", "supplier", "telegram-sweep", "trending", "watchdog",
       ].sort(),
     );

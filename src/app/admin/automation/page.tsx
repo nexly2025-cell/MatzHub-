@@ -10,8 +10,7 @@ const JOBS = [
   ["trending", "Every 30 min", "Recompute the decayed engagement score that drives ranking."],
   ["expire", "Hourly", "Archive expired products, flip low-stock and out-of-stock states."],
   ["supplier", "Daily 02:00", "Rescore supplier health and raise ops tasks for weak suppliers."],
-  ["price-alerts", "Hourly", "Notify buyers whose saved product hit their target price."],
-  ["cart-recovery", "Hourly", "Nudge carts idle for 4+ hours."],
+  ["cart-recovery", "Hourly", "Mark carts idle for 4+ hours for operations reporting."],
   ["digest", "Daily 08:00", "Send the founder digest to Telegram."],
 ];
 

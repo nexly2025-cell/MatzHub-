@@ -1,11 +1,11 @@
-import { and, eq, inArray, lte, sql } from "drizzle-orm";
+import { and, eq, inArray, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { manufacturers, notifications, opsTasks } from "@/db/schema";
 import { SITE, inr } from "@/lib/utils";
 
 /**
  * Notification dispatcher.
- * Renders templates, sends via WhatsApp Cloud API / Telegram, retries with backoff.
+ * Renders templates, sends through the persistent Baileys worker or Telegram, and retries with bounded backoff.
  * Nothing here can block a customer action — the queue is drained by cron.
  */
 
@@ -15,19 +15,22 @@ import crypto from "node:crypto";
 const payloadHash = (template: string, recipient: string, payload: Payload) =>
   crypto.createHash("sha256").update(`${template}|${recipient}|${JSON.stringify(payload)}`).digest("hex");
 
+const MAX_NOTIFICATION_ATTEMPTS = 3;
+const CLAIM_TIMEOUT_MS = 5 * 60 * 1000;
+
 const s = (p: Payload, k: string, d = "") => (typeof p[k] === "string" || typeof p[k] === "number" ? String(p[k]) : d);
 const n = (p: Payload, k: string, d = 0) => (typeof p[k] === "number" ? p[k] : d);
 
 export function render(template: string, p: Payload): string {
   switch (template) {
-    case "order_confirmed":
+    case "order_received":
       return [
-        `*Order confirmed — ${s(p, "orderNo")}*`,
+        `*Order request received — ${s(p, "orderNo")}*`,
         ``,
         `Thanks for shopping with MatzHub. Total ${inr(n(p, "total"))}.`,
-        `Your items ship from the curated source within ≤5 hours.`,
+        `We’ll confirm live availability and delivery details before dispatch.`,
         ``,
-        `Track it here: ${SITE.url}/order/${s(p, "orderNo")}`,
+        `Track your request: ${s(p, "orderUrl", `${SITE.url}/track`)}`,
         ``,
         `Reply to this message any time if you need help.`,
       ].join("\n");
@@ -44,22 +47,6 @@ export function render(template: string, p: Payload): string {
       ].join("\n");
     }
 
-    case "price_drop":
-      return [
-        `*Price drop on your saved item*`,
-        ``,
-        `${s(p, "title")} is now ${inr(n(p, "price"))} — at or below your ${inr(n(p, "target"))} target.`,
-        ``,
-        `${SITE.url}/p/${s(p, "slug")}`,
-      ].join("\n");
-
-    case "cart_recovery":
-      return [
-        `You left something in your MatzHub cart.`,
-        ``,
-        `Manufacturer stock moves fast and items archive automatically. Finish here: ${SITE.url}/cart`,
-      ].join("\n");
-
     case "new_order":
       return `🟢 Order ${s(p, "orderNo")} · ${inr(n(p, "total"))} · risk ${n(p, "risk")}`;
 
@@ -69,7 +56,7 @@ export function render(template: string, p: Payload): string {
         ``,
         `${inr(n(p, "total"))} confirmed. Your order is now first in the dispatch queue.`,
         ``,
-        `${SITE.url}/order/${s(p, "orderNo")}`,
+        s(p, "orderUrl", `${SITE.url}/track`),
       ].join("\n");
 
     case "order_status_update": {
@@ -82,7 +69,7 @@ export function render(template: string, p: Payload): string {
         cancelled: "cancelled. If you paid, the refund is being processed.",
         returned: "marked as returned and the replacement or refund is in motion.",
       };
-      return [`*Order ${s(p, "orderNo")}*`, "", `Your order is ${human[s(p, "status")] ?? s(p, "status")}`, track, "", `${SITE.url}/order/${s(p, "orderNo")}`].filter(Boolean).join("\n");
+      return [`*Order ${s(p, "orderNo")}*`, "", `Your order is ${human[s(p, "status")] ?? s(p, "status")}`, track, "", s(p, "orderUrl", `${SITE.url}/track`)].filter(Boolean).join("\n");
     }
 
     case "moderation_needed":
@@ -243,7 +230,25 @@ async function resolveRecipient(recipient: string): Promise<string | null> {
   return recipient;
 }
 
-/** Drain the queue. Idempotent and safe to run every minute. */
+/** Requeue claims abandoned by a terminated worker invocation. */
+export async function recoverStaleNotificationClaims() {
+  const cutoff = new Date(Date.now() - CLAIM_TIMEOUT_MS);
+  const requeued = await db
+    .update(notifications)
+    .set({ status: "queued", claimedAt: null, error: "retrying after interrupted delivery" })
+    .where(and(eq(notifications.status, "processing"), lte(notifications.claimedAt, cutoff), lt(notifications.attempts, MAX_NOTIFICATION_ATTEMPTS)))
+    .returning({ id: notifications.id });
+
+  const exhausted = await db
+    .update(notifications)
+    .set({ status: "failed", claimedAt: null, error: "delivery claim timed out after maximum attempts" })
+    .where(and(eq(notifications.status, "processing"), lte(notifications.claimedAt, cutoff), sql`${notifications.attempts} >= ${MAX_NOTIFICATION_ATTEMPTS}`))
+    .returning({ id: notifications.id });
+
+  return { requeued: requeued.length, exhausted: exhausted.length };
+}
+
+/** Drain the queue. Atomically claims every notification before transport. */
 async function escalate(summary: string, detail: string) {
   const hook = process.env.UPTIME_WEBHOOK_URL;
   if (!hook) return;
@@ -259,57 +264,65 @@ async function escalate(summary: string, detail: string) {
 }
 
 export async function dispatchNotifications(limit = 50) {
+  await recoverStaleNotificationClaims();
   const queued = await db
-    .select()
+    .select({ id: notifications.id })
     .from(notifications)
-    .where(eq(notifications.status, "queued"))
+    .where(and(eq(notifications.status, "queued"), lt(notifications.attempts, MAX_NOTIFICATION_ATTEMPTS)))
     .orderBy(notifications.createdAt)
     .limit(limit);
 
   let sent = 0;
   let failed = 0;
   let skipped = 0;
+  let processed = 0;
 
-  for (const item of queued) {
-    const text = render(item.template, (item.payload ?? {}) as Payload);
+  for (const queuedItem of queued) {
+    // Compare-and-set claim: concurrent cron invocations can see the same row,
+    // but only one of them may transition it from queued to processing.
+    const [item] = await db
+      .update(notifications)
+      .set({ status: "processing", claimedAt: new Date(), attempts: sql`${notifications.attempts} + 1`, error: null })
+      .where(and(eq(notifications.id, queuedItem.id), eq(notifications.status, "queued"), lt(notifications.attempts, MAX_NOTIFICATION_ATTEMPTS)))
+      .returning();
+    if (!item) continue;
+    processed += 1;
 
-    // Anti-spam: the same alert to the same recipient is never sent twice within
-    // 15 minutes. Covers watchdog flapping, repeated failures, chatty crons.
-    const hash = payloadHash(item.template, item.recipient, (item.payload ?? {}) as Payload);
-    const [recentDup] = await db
-      .select({ id: notifications.id })
+    const payload = (item.payload ?? {}) as Payload;
+    const text = render(item.template, payload);
+    const hash = payloadHash(item.template, item.recipient, payload);
+    const recentPayloads = await db
+      .select({ payload: notifications.payload, template: notifications.template, recipient: notifications.recipient })
       .from(notifications)
-      .where(and(eq(notifications.status, "sent"), sql`${notifications.sentAt} > now() - interval '15 minutes'`))
-      .orderBy(sql`${notifications.sentAt} desc`)
-      .limit(25);
-    if (recentDup) {
-      const [recentPayloads] = await db
-        .select({ payload: notifications.payload, template: notifications.template, recipient: notifications.recipient, sentAt: notifications.sentAt })
-        .from(notifications)
-        .where(
-          and(
-            eq(notifications.status, "sent"),
-            eq(notifications.template, item.template),
-            eq(notifications.recipient, item.recipient),
-            sql`${notifications.sentAt} > now() - interval '15 minutes'`,
-          ),
-        )
-        .limit(5);
-      if (recentPayloads && payloadHash(recentPayloads.template, recentPayloads.recipient, (recentPayloads.payload ?? {}) as Payload) === hash) {
-        await db.update(notifications).set({ status: "sent", sentAt: new Date(), error: "deduped: identical alert within 15m window" }).where(eq(notifications.id, item.id));
-        failed++; // counts as suppressed, not delivered
-        continue;
-      }
-    }
-    const to = await resolveRecipient(item.recipient);
-
-    if (!to) {
-      await db.update(notifications).set({ status: "failed", error: "no deliverable address" }).where(eq(notifications.id, item.id));
+      .where(
+        and(
+          eq(notifications.status, "sent"),
+          eq(notifications.template, item.template),
+          eq(notifications.recipient, item.recipient),
+          sql`${notifications.sentAt} > now() - interval '15 minutes'`,
+        ),
+      )
+      .limit(5);
+    const duplicate = recentPayloads.some((recent) =>
+      payloadHash(recent.template, recent.recipient, (recent.payload ?? {}) as Payload) === hash,
+    );
+    if (duplicate) {
+      await db.update(notifications)
+        .set({ status: "sent", sentAt: new Date(), claimedAt: null, error: "deduped: identical alert within 15m window" })
+        .where(and(eq(notifications.id, item.id), eq(notifications.status, "processing")));
       skipped += 1;
       continue;
     }
 
-    // Route alert class to the right person's inbox.
+    const to = await resolveRecipient(item.recipient);
+    if (!to) {
+      await db.update(notifications)
+        .set({ status: "failed", claimedAt: null, error: "no deliverable address" })
+        .where(and(eq(notifications.id, item.id), eq(notifications.status, "processing")));
+      skipped += 1;
+      continue;
+    }
+
     const audit: Record<string, TelegramAudience> = {
       automation_alert: "dev",
       worker_outdated: "dev",
@@ -320,7 +333,6 @@ export async function dispatchNotifications(limit = 50) {
       security_alert: "dev",
     };
     const audience: TelegramAudience = audit[item.template] ?? "admin";
-
     const result =
       item.channel === "telegram"
         ? await sendTelegramTo(audience, text)
@@ -329,10 +341,14 @@ export async function dispatchNotifications(limit = 50) {
           : { ok: false, error: `channel ${item.channel} not implemented` };
 
     if (result.ok) {
-      await db.update(notifications).set({ status: "sent", sentAt: new Date(), error: null }).where(eq(notifications.id, item.id));
+      await db.update(notifications)
+        .set({ status: "sent", sentAt: new Date(), claimedAt: null, error: null })
+        .where(and(eq(notifications.id, item.id), eq(notifications.status, "processing")));
       sent += 1;
     } else {
-      await db.update(notifications).set({ status: "failed", error: result.error?.slice(0, 400) }).where(eq(notifications.id, item.id));
+      await db.update(notifications)
+        .set({ status: "failed", claimedAt: null, error: result.error?.slice(0, 400) ?? "transport failed" })
+        .where(and(eq(notifications.id, item.id), eq(notifications.status, "processing")));
       failed += 1;
     }
   }
@@ -357,17 +373,18 @@ export async function dispatchNotifications(limit = 50) {
     }
   }
 
-  return { processed: queued.length, sent, failed, skipped };
+  return { processed, sent, failed, skipped };
 }
 
 /** Retry messages that failed transiently, capped so a dead channel doesn't loop forever. */
 export async function retryFailedNotifications(limit = 25) {
   const rows = await db
     .update(notifications)
-    .set({ status: "queued", error: null })
+    .set({ status: "queued", claimedAt: null, error: null })
     .where(
       and(
         eq(notifications.status, "failed"),
+        lt(notifications.attempts, MAX_NOTIFICATION_ATTEMPTS),
         sql`${notifications.error} not ilike '%no deliverable%'`,
         sql`${notifications.error} not ilike '%not configured%'`,
         lte(notifications.createdAt, new Date(Date.now() - 5 * 60 * 1000)),

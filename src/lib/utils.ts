@@ -39,7 +39,7 @@ export const cx = (...parts: Array<string | false | null | undefined>) => parts.
  * client components import other helpers from this module.
  */
 export const orderNo = () => {
-  const b = crypto.getRandomValues(new Uint8Array(2));
+  const b = crypto.getRandomValues(new Uint8Array(5));
   const rand = Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("").toUpperCase();
   return `MH${new Date().toISOString().slice(2, 10).replace(/-/g, "")}${rand}`;
 };

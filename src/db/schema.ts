@@ -297,6 +297,12 @@ export const orders = pgTable(
   {
     id: uuid("id").primaryKey().defaultRandom(),
     orderNo: text("order_no").notNull(),
+    // A browser-generated idempotency key prevents a retry or double click
+    // from placing the same cart twice.
+    submissionKey: text("submission_key"),
+    // High-entropy access token for customer confirmation/tracking URLs.
+    // Legacy manually-recorded orders may be null until they are updated.
+    accessToken: text("access_token"),
     userId: uuid("user_id").references(() => users.id, { onDelete: "set null" }),
     anonId: text("anon_id"),
 
@@ -332,6 +338,8 @@ export const orders = pgTable(
   },
   (t) => [
     uniqueIndex("orders_no_uidx").on(t.orderNo),
+    uniqueIndex("orders_submission_key_uidx").on(t.submissionKey),
+    uniqueIndex("orders_access_token_uidx").on(t.accessToken),
     index("orders_status_idx").on(t.status),
     index("orders_phone_idx").on(t.phone),
     index("orders_created_idx").on(t.createdAt),
@@ -522,17 +530,22 @@ export const notifications = pgTable(
   "notifications",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    channel: text("channel").notNull(), // whatsapp | email | push | telegram
+    channel: text("channel").notNull(), // whatsapp | telegram
     audience: text("audience").notNull().default("customer"),
     recipient: text("recipient").notNull(),
     template: text("template").notNull(),
     payload: jsonb("payload").$type<Record<string, unknown>>(),
-    status: text("status").notNull().default("queued"), // queued | sent | failed
+    status: text("status").notNull().default("queued"), // queued | processing | sent | failed
+    attempts: integer("attempts").notNull().default(0),
+    claimedAt: timestamp("claimed_at", { withTimezone: true }),
     error: text("error"),
     sentAt: timestamp("sent_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("notifications_status_idx").on(t.status)],
+  (t) => [
+    index("notifications_status_idx").on(t.status),
+    index("notifications_claim_idx").on(t.status, t.claimedAt),
+  ],
 );
 
 export const resellers = pgTable(

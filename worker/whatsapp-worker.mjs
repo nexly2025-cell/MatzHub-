@@ -42,12 +42,10 @@ const CONFIG = {
   port: Number(process.env.WA_WORKER_PORT || 8081),
   workerToken: process.env.WA_WORKER_TOKEN || "",
   cronSecret: process.env.CRON_SECRET || "",
-  // Comma-separated group names to watch. Empty = watch every group you're in.
+  // Optional group-name filters. Exact JIDs below are the production boundary.
   groups: (process.env.WA_GROUPS || "").split(",").map((g) => g.trim()).filter(Boolean),
+  groupIds: (process.env.WA_GROUP_IDS || "").split(",").map((group) => group.trim()).filter(Boolean),
   maxImageBytes: 5 * 1024 * 1024,
-  // Read-only ingestion role: never send customer messages from this account.
-  // Supplier groups only; anything else is ignored and treated as noise.
-  supplierIngestionNumber: process.env.SUPPLIER_INGESTION_NUMBER || "",
   // Force history sync even on an already-synced session. Normally unnecessary:
   // the flag below auto-enables it whenever the session has never received a
   // history payload. Set WA_BACKFILL=0 to opt out entirely.
@@ -85,6 +83,26 @@ function getMappedCategory(jid, groupName) {
     }
   }
   return null;
+}
+
+/**
+ * Supplier isolation boundary. WhatsApp group JIDs are the authoritative
+ * identifier; a phone-number suffix cannot identify a group. Explicit env JIDs
+ * win, then the checked-in mapping acts as a safe default. A worker with no
+ * allow-list refuses all group ingestion in production rather than publishing
+ * from every group the linked account happens to join.
+ */
+function isAllowedGroup(jid, groupName = "") {
+  if (CONFIG.groupIds.length) return CONFIG.groupIds.includes(jid);
+  if (CONFIG.groups.length) return CONFIG.groups.some((group) => groupName.toLowerCase().includes(group.toLowerCase()));
+  if (Object.keys(GROUP_MAP).length) return Object.prototype.hasOwnProperty.call(GROUP_MAP, jid);
+  return process.env.NODE_ENV !== "production";
+}
+
+function watchedGroupCount() {
+  if (CONFIG.groupIds.length) return CONFIG.groupIds.length;
+  if (CONFIG.groups.length) return CONFIG.groups.length;
+  return Object.keys(GROUP_MAP).length;
 }
 
 /* ------------------------------------------------------------------ */
@@ -427,13 +445,13 @@ async function start() {
       lastQr = qr;
       lastQrAt = Date.now();
       await saveQr(qr);
-      log("qr_ready", { note: "Scan the QR in the saved PNG or terminal output with WhatsApp > Linked Devices. One time only." });
+      log("qr_ready", { note: "Scan the protected PNG delivered through the Telegram QR flow with WhatsApp > Linked Devices." });
     }
     if (connection === "open") {
       connectionState = "connected";
       reconnectAttempts = 0; // healthy again — reset backoff
       escalated = false;     // and re-arm escalation for any future outage
-      log("connected", { watching: CONFIG.groups.length ? CONFIG.groups : "all groups" });
+      log("connected", { watchedGroups: watchedGroupCount() });
       // Session is now paired — the QR is stale and would only mislead the
       // next operator. Drop it from memory and disk. Best-effort; never fatal.
       lastQr = null;
@@ -639,7 +657,7 @@ http
         lastMessageAt,
         // Count only. The subject list is supplier-identifying and this
         // endpoint is deliberately unauthenticated for uptime probes.
-        watching: CONFIG.groups.length ? CONFIG.groups.length : "all",
+        watching: watchedGroupCount(),
       });
     }
 
@@ -800,10 +818,9 @@ function startCronScheduler() {
     { name: "watchdog", intervalMs: 15 * 60 * 1000 },
     { name: "trending", intervalMs: 30 * 60 * 1000 },
     { name: "expire", intervalMs: 60 * 60 * 1000 },
-    { name: "price-alerts", intervalMs: 60 * 60 * 1000 },
     { name: "cart-recovery", intervalMs: 60 * 60 * 1000 },
     { name: "notify-retry", intervalMs: 60 * 60 * 1000 },
-    { name: "notify", intervalMs: 120 * 60 * 1000 },
+    { name: "notify", intervalMs: 5 * 60 * 1000 },
     { name: "supplier", intervalMs: 24 * 60 * 60 * 1000 },
     { name: "subscription", intervalMs: 24 * 60 * 60 * 1000 },
   ];
@@ -832,6 +849,10 @@ function startCronScheduler() {
   for (const job of subDailyJobs) {
     setInterval(() => trigger(job.name), job.intervalMs);
   }
+
+  // A restart should not hold a customer or ops notification until the first
+  // five-minute interval. Other jobs retain their normal cadence.
+  void trigger("notify");
 }
 
 log("starting", { api: CONFIG.apiUrl, session: CONFIG.sessionDir });

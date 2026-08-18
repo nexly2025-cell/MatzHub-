@@ -12,7 +12,6 @@
     "setup": "node scripts/setup.mjs",
     "preflight": "node scripts/preflight.mjs",
     "webhooks": "node scripts/setup-webhooks.mjs",
-    "seed:storefront": "node scripts/seed-storefront.mjs",
     "provision": "node scripts/provision.mjs",
     "provision:apply": "node scripts/provision.mjs --apply"
   },

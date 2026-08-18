@@ -1,24 +1,26 @@
+import crypto from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { manufacturers, orderItems, orders, products } from "@/db/schema";
-import { inr, orderNo as makeOrderNo, relativeTime } from "@/lib/utils";
+import { manufacturers, notifications, orderItems, orders, products } from "@/db/schema";
+import { shippingFor } from "@/lib/orders";
+import { inr, orderNo as makeOrderNo, relativeTime, SITE } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Order fulfilment.
  *
- * The storefront has no cart and no checkout — orders are agreed on WhatsApp.
- * This is where the team records that conversation so the customer gets an
- * order number to track, and where the status is advanced as it ships.
+ * Customer requests land here automatically; staff may also record an assisted
+ * WhatsApp order. This is where the fulfilment status advances as it ships.
  *
  * Deliberately minimal: a SKU, who it is for, and where it goes. Nothing here
  * takes payment.
  */
 
 const NEXT_STATUS: Record<string, string[]> = {
-  placed: ["packed", "cancelled"],
+  placed: ["confirmed", "cancelled"],
+  confirmed: ["packed", "cancelled"],
   packed: ["shipped", "cancelled"],
   shipped: ["delivered"],
   delivered: ["returned"],
@@ -53,10 +55,12 @@ async function createOrder(formData: FormData) {
   if (!p) return;
 
   const subtotal = p.price * qty;
+  const shipping = shippingFor(subtotal);
   const [created] = await db
     .insert(orders)
     .values({
       orderNo: makeOrderNo(),
+      accessToken: crypto.randomBytes(24).toString("base64url"),
       customerName,
       phone,
       addressLine: addressLine || city,
@@ -65,8 +69,8 @@ async function createOrder(formData: FormData) {
       pincode,
       subtotal,
       discount: 0,
-      shipping: 0,
-      total: subtotal,
+      shipping,
+      total: subtotal + shipping,
       costTotal: p.costPrice * qty,
       profit: subtotal - p.costPrice * qty,
       paymentMode: "prepaid",
@@ -109,10 +113,14 @@ async function advance(formData: FormData) {
   const trackingUrl = String(formData.get("trackingUrl") ?? "").trim();
   if (!id || !status) return;
 
-  const [current] = await db.select({ status: orders.status }).from(orders).where(eq(orders.id, id)).limit(1);
+  const [current] = await db
+    .select({ status: orders.status, orderNo: orders.orderNo, phone: orders.phone, total: orders.total, accessToken: orders.accessToken })
+    .from(orders)
+    .where(eq(orders.id, id))
+    .limit(1);
   if (!current || !(NEXT_STATUS[current.status] ?? []).includes(status)) return;
 
-  await db
+  const [updated] = await db
     .update(orders)
     .set({
       status,
@@ -122,7 +130,21 @@ async function advance(formData: FormData) {
       timeline: sql`${orders.timeline} || ${JSON.stringify([{ at: new Date().toISOString(), status }])}::jsonb`,
     })
     // Optimistic lock: refuses if someone else advanced it first.
-    .where(sql`${orders.id} = ${id} and ${orders.status} = ${current.status}`);
+    .where(sql`${orders.id} = ${id} and ${orders.status} = ${current.status}`)
+    .returning({ id: orders.id });
+
+  if (updated) {
+    const orderUrl = current.accessToken
+      ? `${SITE.url}/order/${current.orderNo}?token=${current.accessToken}`
+      : `${SITE.url}/track`;
+    await db.insert(notifications).values({
+      channel: "whatsapp",
+      audience: "customer",
+      recipient: current.phone,
+      template: "order_status_update",
+      payload: { orderNo: current.orderNo, total: current.total, status, trackingUrl: trackingUrl.startsWith("https://") ? trackingUrl : "", orderUrl },
+    });
+  }
 
   revalidatePath("/admin/orders");
 }

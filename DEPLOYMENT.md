@@ -59,9 +59,10 @@ Required once the worker is deployed:
 
 - `WA_WORKER_URL` — the public URL of the worker (e.g. `https://matzhub-worker.fly.dev`)
 - `WA_WORKER_TOKEN` — must equal `WA_WORKER_TOKEN` on the worker side
+- `WA_GROUP_IDS` — comma-separated supplier group JIDs allowed to ingest
 
 Optional (see `.env.example` for the full list and their effect if unset):
-`CASHFREE_*`, `OPENAI_API_KEY`, `UPTIME_WEBHOOK_URL`, `SUPPLIER_INGESTION_NUMBER`.
+`CASHFREE_*`, `OPENAI_API_KEY`, `UPTIME_WEBHOOK_URL`.
 
 Generate every secret with `openssl rand -hex 32`.
 
@@ -230,7 +231,7 @@ fly secrets set \
   SUPABASE_SERVICE_ROLE_KEY=<...> \
   SUPABASE_BUCKET=products \
   SUPABASE_VIDEO_BUCKET=product-media \
-  SUPPLIER_INGESTION_NUMBER=<optional>
+  WA_GROUP_IDS=<comma-separated-group-jids>
 fly deploy
 ```
 

@@ -142,25 +142,23 @@ the session must be re-paired via `/relink`.
 
 ## Cron schedule (canonical)
 
-Configured in `vercel.json`. Vercel Cron hits each path with the platform's
-own scheduler token; the endpoint additionally requires `Authorization:
-Bearer $CRON_SECRET` (Vercel Cron injects it via the `CRON_SECRET` var). Do
-not duplicate the schedule anywhere else.
+`vercel.json` intentionally contains only the two Hobby-compatible daily jobs:
 
 ```
-*/2  * * * *  /api/cron/notify
-*/5  * * * *  /api/cron/telegram-sweep
-*/10 * * * *  /api/cron/self-heal
-*/15 * * * *  /api/cron/watchdog
-*/30 * * * *  /api/cron/trending
-0    * * * *  /api/cron/expire
-15   * * * *  /api/cron/price-alerts
-30   * * * *  /api/cron/cart-recovery
-45   * * * *  /api/cron/notify-retry
-30 20 * * *   /api/cron/supplier
-30  2 * * *   /api/cron/digest
-0   9 * * *   /api/cron/subscription
-0   4 * * *   /api/cron/storage-sweep
+30 2 * * *  /api/cron/digest
+0  4 * * *  /api/cron/storage-sweep
+```
+
+The persistent WhatsApp worker drives the remaining authenticated jobs, so a
+serverless deployment never owns sub-daily scheduling:
+
+```
+Every 5 min   /api/cron/notify, /api/cron/telegram-sweep
+Every 10 min  /api/cron/self-heal
+Every 15 min  /api/cron/watchdog
+Every 30 min  /api/cron/trending
+Hourly        /api/cron/expire, /api/cron/cart-recovery, /api/cron/notify-retry
+Daily         /api/cron/supplier, /api/cron/subscription
 ```
 
 Manually run a job:
@@ -206,7 +204,7 @@ WhatsApp group  →  worker (Baileys)  →  POST /api/ingest  →  ingestBatch()
 - Authenticated with `INGEST_TOKEN`. Fails-closed: unset token → 401 in
   production.
 - Idempotent by `messageId`.
-- Enforces `SUPPLIER_INGESTION_NUMBER` isolation when set.
+- Enforces the exact `WA_GROUP_IDS` allow-list before accepting ingestion.
 - Returns 503 in maintenance mode (worker retries later; nothing is lost).
 
 ---

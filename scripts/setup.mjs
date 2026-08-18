@@ -125,9 +125,9 @@ if (!hasSupabase) {
 
 /* 8. WhatsApp worker env check */
 banner("Ingestion worker");
-const hasIngest = Boolean(process.env.INGEST_TOKEN && process.env.SUPPLIER_INGESTION_NUMBER && process.env.MATZHUB_API_URL);
+const hasIngest = Boolean(process.env.INGEST_TOKEN && process.env.WA_GROUP_IDS && process.env.MATZHUB_API_URL);
 if (!hasIngest) {
-  warn("Ingestion worker not fully configured (INGEST_TOKEN, SUPPLIER_INGESTION_NUMBER, MATZHUB_API_URL). Launch with `bash launch.sh worker` once configured.");
+  warn("Ingestion worker not fully configured (INGEST_TOKEN, WA_GROUP_IDS, MATZHUB_API_URL). Launch with `bash launch.sh worker` once configured.");
 } else {
   ok("Worker env present");
 }

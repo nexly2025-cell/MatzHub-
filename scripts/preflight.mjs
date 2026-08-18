@@ -52,6 +52,7 @@ const REQUIRED_ENV = [
   "SUPABASE_BUCKET",
   "WA_WORKER_URL",
   "WA_WORKER_TOKEN",
+  "WA_GROUP_IDS",
 ];
 
 const RECOMMENDED_ENV = [
@@ -59,7 +60,6 @@ const RECOMMENDED_ENV = [
   "CASHFREE_APP_ID",
   "CASHFREE_SECRET_KEY",
   "OPENAI_API_KEY",
-  "SUPPLIER_INGESTION_NUMBER",
 ];
 
 /* ── 1. Environment variables ─────────────────────────────────────── */

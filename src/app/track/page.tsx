@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { db } from "@/db";
 import { orders } from "@/db/schema";
 import { SITE, inr, relativeTime, waLink } from "@/lib/utils";
@@ -18,17 +18,17 @@ export const metadata: Metadata = {
 /**
  * Order tracking.
  *
- * Orders are agreed in conversation on WhatsApp — the site has no cart and no
- * checkout. Once the team confirms an order they record it and share the order
- * number, which is what this page resolves. It is read-only: nothing here can
- * create, modify or pay for an order.
+ * This page is read-only: it never creates, modifies, or takes payment for an
+ * order. A customer opens the secure link from their order confirmation, or
+ * verifies the order number with the matching mobile number.
  *
  * Supplier identity is deliberately absent. The customer sees what they bought
  * and where it is, never who made it or which group it came from.
  */
 
 const STAGES = [
-  { key: "placed", label: "Order confirmed", blurb: "We have your order and are preparing it." },
+  { key: "placed", label: "Request received", blurb: "We are checking live availability and delivery details." },
+  { key: "confirmed", label: "Confirmed", blurb: "Your order is confirmed and being prepared." },
   { key: "packed", label: "Packed", blurb: "Quality-checked and boxed." },
   { key: "shipped", label: "Shipped", blurb: "Handed to the courier." },
   { key: "delivered", label: "Delivered", blurb: "Signed for at your address." },
@@ -39,10 +39,9 @@ const TERMINAL: Record<string, { label: string; blurb: string }> = {
   returned: { label: "Returned", blurb: "The return was received and processed." },
 };
 
-/** How far along the four-stage bar a status sits. `confirmed` maps onto `placed`. */
+/** How far along the customer-visible order timeline a status sits. */
 function stageIndex(status: string): number {
-  const normalised = status === "confirmed" ? "placed" : status;
-  const i = STAGES.findIndex((s) => s.key === normalised);
+  const i = STAGES.findIndex((stage) => stage.key === status);
   return i === -1 ? 0 : i;
 }
 
@@ -63,8 +62,15 @@ export default async function TrackPage({
 }) {
   const sp = await searchParams;
   const raw = typeof sp.no === "string" ? sp.no.trim().toUpperCase() : "";
+  const token = typeof sp.token === "string" ? sp.token.trim() : "";
+  const phoneDigits = typeof sp.phone === "string" ? sp.phone.replace(/\D/g, "") : "";
+  const phone = /^(?:91)?[6-9]\d{9}$/.test(phoneDigits)
+    ? (phoneDigits.length === 10 ? `91${phoneDigits}` : phoneDigits)
+    : "";
+  const hasSecureToken = /^[A-Za-z0-9_-]{32,}$/.test(token);
+  const canLookup = Boolean(raw && (hasSecureToken || phone));
 
-  const order = raw
+  const order = canLookup
     ? (
         await db
           .select({
@@ -81,12 +87,20 @@ export default async function TrackPage({
             updatedAt: orders.updatedAt,
           })
           .from(orders)
-          .where(eq(orders.orderNo, raw))
+          .where(
+            and(
+              eq(orders.orderNo, raw),
+              hasSecureToken
+                ? eq(orders.accessToken, token)
+                : or(eq(orders.phone, phone), eq(orders.phone, phone.slice(2))),
+            ),
+          )
           .limit(1)
       )[0]
     : undefined;
 
-  const notFound = Boolean(raw) && !order;
+  const missingAccess = Boolean(raw) && !canLookup;
+  const notFound = canLookup && !order;
   const terminal = order ? TERMINAL[order.status] : undefined;
   const active = order && !terminal ? stageIndex(order.status) : -1;
 
@@ -98,43 +112,54 @@ export default async function TrackPage({
         <p className="eyebrow mb-3">Order status</p>
         <h1 className="t-title">Track your order</h1>
         <p className="t-lead mt-5">
-          Enter the order number our team shared with you on WhatsApp. It looks like{" "}
-          <code className="rounded bg-surface-2 px-1.5 py-0.5 text-[13px]">MH2608141A2B</code>.
+          Open the secure link from your order confirmation, or enter your order number with the mobile number used for the order.
         </p>
 
-        {/* GET keeps the result linkable and shareable, and works without JS. */}
-        <form method="GET" action="/track" className="mt-7 flex flex-col gap-3 sm:flex-row">
-          <label htmlFor="no" className="sr-only">
-            Order number
+        {/* GET keeps a secure result linkable and works without client JavaScript. */}
+        <form method="GET" action="/track" className="mt-7 grid gap-3 sm:grid-cols-2">
+          <label className="block">
+            <span className="eyebrow mb-2 block">Order number</span>
+            <input
+              id="no"
+              name="no"
+              defaultValue={raw}
+              required
+              autoComplete="off"
+              autoCapitalize="characters"
+              spellCheck={false}
+              placeholder="MH2608141A2B"
+              aria-describedby={notFound || missingAccess ? "track-error" : undefined}
+              className="field w-full font-mono text-[15px] uppercase tracking-wider"
+            />
           </label>
-          <input
-            id="no"
-            name="no"
-            defaultValue={raw}
-            required
-            autoComplete="off"
-            autoCapitalize="characters"
-            spellCheck={false}
-            placeholder="MH2608141A2B"
-            aria-describedby={notFound ? "track-error" : undefined}
-            className="field flex-1 font-mono text-[15px] uppercase tracking-wider"
-          />
-          <button type="submit" className="btn btn-solid sm:w-auto">
-            Track
+          <label className="block">
+            <span className="eyebrow mb-2 block">Mobile number</span>
+            <input name="phone" defaultValue={phoneDigits} inputMode="tel" autoComplete="tel" placeholder="91XXXXXXXXXX" className="field w-full" />
+          </label>
+          <details className="sm:col-span-2">
+            <summary className="cursor-pointer text-[12px] text-muted underline underline-offset-4">Have a secure access code instead?</summary>
+            <label className="mt-3 block">
+              <span className="eyebrow mb-2 block">Secure access code</span>
+              <input name="token" defaultValue={token} autoComplete="off" className="field w-full font-mono text-[12px]" />
+            </label>
+          </details>
+          <button type="submit" className="btn btn-solid sm:col-span-2 sm:w-fit">
+            Track order
           </button>
         </form>
 
+        {missingAccess && (
+          <div id="track-error" role="status" className="surface mt-6 p-5">
+            <p className="t-body text-ink">For privacy, enter the mobile number used for this order or use the secure link we shared.</p>
+          </div>
+        )}
+
         {notFound && (
           <div id="track-error" role="status" className="surface mt-6 p-5">
-            <p className="t-body text-ink">
-              No order found for <span className="font-mono">{raw}</span>.
-            </p>
-            <p className="t-body mt-2">
-              Order numbers are case-insensitive but must match exactly. If you have just placed the
-              order, give us a few minutes to record it.
-            </p>
+            <p className="t-body text-ink">We could not match those order details.</p>
+            <p className="t-body mt-2">Check the order number and mobile number, or ask us on WhatsApp if you need help.</p>
             <a
-              href={waLink(`Hi MatzHub, I can't track order ${raw}. Could you check it for me?`)}
+              href={waLink(`Hi MatzHub, I need help tracking order ${raw}.`)}
               target="_blank"
               rel="noopener noreferrer"
               className="btn btn-whatsapp mt-4"
