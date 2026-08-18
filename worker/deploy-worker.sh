@@ -1,39 +1,42 @@
 #!/usr/bin/env bash
-# Safe Docker worker operations for the persistent VM.
+# MatzHub persistent WhatsApp worker operations.
 # Usage: ./deploy-worker.sh [deploy|update|rebuild|status|logs|restart]
-# Never removes the WhatsApp session volume.
+# The wa-session volume is never removed by this script.
 set -Eeuo pipefail
 
 ACTION="${1:-deploy}"
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
-CONTAINER_NAME="${WA_WORKER_CONTAINER:-matzhub-whatsapp-worker}"
-PREVIOUS_CONTAINER="${CONTAINER_NAME}-previous"
-IMAGE="${WA_WORKER_IMAGE:-matzhub-whatsapp-worker:latest}"
+ENV_FILE="${WA_WORKER_ENV_FILE:-$SCRIPT_DIR/.env}"
 SESSION_VOLUME="${WA_SESSION_VOLUME:-wa-session}"
 HOST_PORT="${WA_WORKER_HOST_PORT:-8081}"
-ENV_FILE="${WA_WORKER_ENV_FILE:-$SCRIPT_DIR/.env}"
 
-fail() {
-  printf 'ERROR: %s\n' "$*" >&2
-  exit 1
-}
+# Preserve compatibility with the existing production container name.
+if [[ -n "${WA_WORKER_CONTAINER:-}" ]]; then
+  CONTAINER_NAME="$WA_WORKER_CONTAINER"
+elif docker container inspect matzhub-worker >/dev/null 2>&1; then
+  CONTAINER_NAME="matzhub-worker"
+else
+  CONTAINER_NAME="matzhub-whatsapp-worker"
+fi
+PREVIOUS_CONTAINER="${CONTAINER_NAME}-previous"
+IMAGE="${WA_WORKER_IMAGE:-matzhub-worker}"
 
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 require_docker() {
   command -v docker >/dev/null 2>&1 || fail "Docker is required."
+  docker info >/dev/null 2>&1 || fail "Cannot access the Docker daemon."
 }
-
 worker_health() {
   docker exec "$CONTAINER_NAME" node -e "fetch('http://127.0.0.1:8081/health').then(async r => { console.log(r.status); console.log(await r.text()); }).catch(() => process.exit(1))"
 }
-
 wait_for_health() {
   local status=""
-  for _ in $(seq 1 30); do
+  for _ in $(seq 1 60); do
     status="$(docker exec "$CONTAINER_NAME" node -e "fetch('http://127.0.0.1:8081/health').then(r => console.log(r.status)).catch(() => process.exit(1))" 2>/dev/null || true)"
     case "$status" in
       200|503) printf '%s\n' "$status"; return 0 ;;
-      *) sleep 2 ;;
+      *) sleep 3 ;;
     esac
   done
   return 1
@@ -55,19 +58,17 @@ case "$ACTION" in
   restart)
     require_docker
     docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1 || fail "Worker container is missing. Use ./deploy-worker.sh deploy."
-    docker restart "$CONTAINER_NAME" >/dev/null
-    status="$(wait_for_health)" || fail "Worker did not answer /health within 60 seconds."
+    # SIGTERM lets the worker upload the current session before Docker restarts.
+    docker restart --time 30 "$CONTAINER_NAME" >/dev/null
+    status="$(wait_for_health)" || fail "Worker did not answer /health within 180 seconds."
     case "$status" in
       200) echo "Worker restarted and connected. Session volume preserved." ;;
-      503) echo "Worker restarted and is responding; WhatsApp pairing/reconnect is still in progress." ;;
+      503) echo "Worker restarted and is responding; WhatsApp reconnect/pairing is still in progress." ;;
     esac
     exit 0
     ;;
-  deploy|update|rebuild)
-    ;;
-  *)
-    fail "Unknown command '$ACTION'. Use deploy, update, rebuild, status, logs, or restart."
-    ;;
+  deploy|update|rebuild) ;;
+  *) fail "Unknown command '$ACTION'. Use deploy, update, rebuild, status, logs, or restart." ;;
 esac
 
 require_docker
@@ -76,49 +77,72 @@ git -C "$REPOSITORY_ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1 || fai
 [[ "$(git -C "$REPOSITORY_ROOT" branch --show-current)" == "main" ]] || fail "Refusing to deploy outside main."
 git -C "$REPOSITORY_ROOT" diff --quiet && git -C "$REPOSITORY_ROOT" diff --cached --quiet || fail "Commit or stash local changes before deployment."
 
+# Optional read-only GitHub token for private repositories. It is used only as
+# an in-memory HTTP header and is never written to the remote URL or .git/config.
+GITHUB_TOKEN="$(sed -n 's/^GITHUB_TOKEN=//p' "$ENV_FILE" | tail -1 | tr -d '\r')"
+fetch_main() {
+  if [[ -n "$GITHUB_TOKEN" ]]; then
+    local header
+    header="Authorization: Basic $(printf 'x-access-token:%s' "$GITHUB_TOKEN" | base64 | tr -d '\n')"
+    GIT_CONFIG_COUNT=1 \
+      GIT_CONFIG_KEY_0='http.https://github.com/.extraheader' \
+      GIT_CONFIG_VALUE_0="$header" \
+      git -C "$REPOSITORY_ROOT" fetch origin main
+  else
+    git -C "$REPOSITORY_ROOT" fetch origin main || fail "Git fetch failed. If the repository is private, set a read-only GITHUB_TOKEN in worker/.env."
+  fi
+}
+
 if [[ "$ACTION" != "rebuild" ]]; then
-  git -C "$REPOSITORY_ROOT" fetch origin main
-  git -C "$REPOSITORY_ROOT" merge --ff-only origin/main
+  fetch_main
+  git -C "$REPOSITORY_ROOT" merge --ff-only origin/main || fail "Cannot fast-forward worker checkout. Resolve the Git branch before deployment."
 fi
+unset GITHUB_TOKEN
 
 docker volume inspect "$SESSION_VOLUME" >/dev/null 2>&1 || docker volume create "$SESSION_VOLUME" >/dev/null
 
 rollback() {
-  printf 'Deployment failed; restoring the previous container if available.\n' >&2
+  printf 'Deployment failed; restoring previous worker if available.\n' >&2
   docker logs --tail 80 "$CONTAINER_NAME" 2>&1 || true
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   if docker container inspect "$PREVIOUS_CONTAINER" >/dev/null 2>&1; then
     docker rename "$PREVIOUS_CONTAINER" "$CONTAINER_NAME"
     docker start "$CONTAINER_NAME" >/dev/null
-    printf 'Previous worker restored.\n' >&2
+    printf 'Previous worker restored; session volume was untouched.\n' >&2
   fi
 }
 trap rollback ERR
 
-echo "Building $IMAGE…"
-docker build --pull -t "$IMAGE" "$SCRIPT_DIR"
+echo "Building ${IMAGE}:candidate…"
+docker build --pull -t "${IMAGE}:candidate" "$SCRIPT_DIR"
 
-# A stopped predecessor is a rollback target, never a second Baileys runtime.
+# Stop the old worker before starting a new one: exactly one Baileys socket may
+# use the session. Keep the stopped predecessor only as a rollback target.
 docker rm -f "$PREVIOUS_CONTAINER" >/dev/null 2>&1 || true
 if docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
-  docker stop "$CONTAINER_NAME" >/dev/null
+  docker stop --time 30 "$CONTAINER_NAME" >/dev/null
   docker rename "$CONTAINER_NAME" "$PREVIOUS_CONTAINER"
 fi
 
-echo "Starting $CONTAINER_NAME with persistent volume $SESSION_VOLUME…"
+echo "Starting ${CONTAINER_NAME} with persistent volume ${SESSION_VOLUME}…"
 docker run -d \
   --name "$CONTAINER_NAME" \
   --restart unless-stopped \
   --env-file "$ENV_FILE" \
-  -p "${HOST_PORT}:8081" \
+  --env "WA_SESSION_DIR=/data/.wa-session" \
+  --env "WA_WORKER_PORT=8081" \
+  --memory 700m --memory-swap 1g \
+  --log-opt max-size=10m --log-opt max-file=3 \
+  -p "127.0.0.1:${HOST_PORT}:8081" \
   -v "${SESSION_VOLUME}:/data" \
-  "$IMAGE" >/dev/null
+  "${IMAGE}:candidate" >/dev/null
 
-status="$(wait_for_health)" || fail "Worker health endpoint did not respond within 60 seconds."
+status="$(wait_for_health)" || fail "Worker health endpoint did not respond within 180 seconds."
 case "$status" in
-  200) echo "Worker deployed and connected. Persistent session volume preserved." ;;
-  503) echo "Worker deployed and responding; WhatsApp is not connected yet. Use the authenticated Telegram QR flow only if pairing is required." ;;
+  200) echo "Worker deployed and WhatsApp connected. Persistent session preserved." ;;
+  503) echo "Worker deployed and responding; WhatsApp is not connected yet. Use the authenticated Telegram QR flow only if pairing is truly required." ;;
 esac
 
+docker tag "${IMAGE}:candidate" "${IMAGE}:current"
 docker rm -f "$PREVIOUS_CONTAINER" >/dev/null 2>&1 || true
 trap - ERR
