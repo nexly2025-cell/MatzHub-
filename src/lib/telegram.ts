@@ -4,6 +4,12 @@ import { automationRuns, categories, manufacturers, opsTasks, products, settings
 import { detectCategory } from "@/lib/ai";
 import { inr, relativeTime } from "@/lib/utils";
 import { createSubscriptionOrder, SUBSCRIPTION_PRICE_INR, subscriptionStatus } from "@/lib/subscription";
+import {
+  approvedSupplierGroups,
+  canonicalSupplierGroupName,
+  categoryForApprovedSupplierGroup,
+  selectAuthoritativeLiveGroups,
+} from "@/lib/supplier-groups";
 
 /**
  * Telegram Operations Center.
@@ -136,10 +142,19 @@ async function channelCommand(args: string[]): Promise<Reply> {
   const [row] = await db.select().from(settings).where(eq(settings.key, CHANNEL_UNDO_KEY)).limit(1);
   if (!row?.value) return { text: "↩️ Nothing to undo.", keyboard: keyboardFor("m:ch"), ephemeral: true };
 
+  const [candidate] = await db
+    .select({ id: manufacturers.id, name: manufacturers.name, canonicalGroupName: manufacturers.canonicalGroupName })
+    .from(manufacturers)
+    .where(eq(manufacturers.sourceGroupId, row.value))
+    .limit(1);
+  if (!candidate || !canonicalSupplierGroupName(candidate.canonicalGroupName ?? candidate.name)) {
+    await setSetting(CHANNEL_UNDO_KEY, "");
+    return { text: "That previous channel is no longer an authoritative supplier source.", keyboard: keyboardFor("m:ch"), ephemeral: true };
+  }
   const [restored] = await db
     .update(manufacturers)
-    .set({ status: "active" })
-    .where(eq(manufacturers.sourceGroupId, row.value))
+    .set({ status: "active", autoPublish: true })
+    .where(eq(manufacturers.id, candidate.id))
     .returning({ name: manufacturers.name });
   await setSetting(CHANNEL_UNDO_KEY, "");
 
@@ -155,40 +170,79 @@ async function channelCommand(args: string[]): Promise<Reply> {
  */
 const shortJid = (jid: string) => jid.replace(/@g\.us$/, "");
 
-/** Groups the worker can see that are not yet registered as channels. */
+type ChannelRow = {
+  name: string;
+  jid: string | null;
+  canonicalGroupName?: string | null;
+  status?: string;
+  category?: string | null;
+  products?: number;
+};
+
+/**
+ * A stored row is visible to Telegram only when it belongs to one configured
+ * supplier source. Same-JID rows collapse; same-name different-JID rows are
+ * treated as ambiguous and withheld until the configured JID resolves it.
+ */
+function distinctAuthoritativeChannels<T extends ChannelRow>(rows: T[]) {
+  const byJid = new Map<string, T>();
+  for (const row of rows) {
+    const canonical = row.canonicalGroupName ?? canonicalSupplierGroupName(row.name);
+    if (!row.jid || !canonical || byJid.has(row.jid)) continue;
+    byJid.set(row.jid, { ...row, canonicalGroupName: canonical });
+  }
+
+  const byName = new Map<string, T[]>();
+  for (const row of byJid.values()) {
+    const canonical = row.canonicalGroupName!;
+    byName.set(canonical, [...(byName.get(canonical) ?? []), row]);
+  }
+
+  return approvedSupplierGroups.flatMap((configured) => {
+    const matches = byName.get(configured.name) ?? [];
+    return matches.length === 1 ? matches : [];
+  });
+}
+
+/** Only configured authoritative groups may be added from a live worker. */
 async function listAddableGroups(): Promise<Reply> {
   const live = await workerFetch("/groups");
   if ("error" in live && live.error) {
     return {
-      text: `➕ *Add a channel*\n\n⚠️ The worker is unreachable, so its group list cannot be read.\n\`${live.error}\``,
+      text: `📡 *Authoritative groups*\n\n⚠️ The worker is unreachable, so JIDs cannot be resolved. No group is added automatically.\n\`${live.error}\``,
       keyboard: [[{ text: "◀️ Back", callback_data: "m:ch" }]],
       ephemeral: true,
     };
   }
   const body = (live as { body: Record<string, unknown> }).body;
-  const groups = (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string; subject?: string }>;
-
-  // Exclude every registered jid regardless of status. A soft-deleted channel
-  // is still "known": offering it here would look like a fresh add but would
-  // silently reactivate an old row with its previous category mapping.
-  const known = new Set(
-    (await db.select({ jid: manufacturers.sourceGroupId }).from(manufacturers).where(isNotNull(manufacturers.sourceGroupId)))
-      .map((r) => r.jid),
+  const liveGroups = (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string; subject?: string }>;
+  const selected = selectAuthoritativeLiveGroups(liveGroups);
+  const knownRows = distinctAuthoritativeChannels(
+    await db
+      .select({ name: manufacturers.name, jid: manufacturers.sourceGroupId, canonicalGroupName: manufacturers.canonicalGroupName })
+      .from(manufacturers)
+      .where(isNotNull(manufacturers.sourceGroupId)),
   );
-  const addable = groups.filter((g) => g.jid && !known.has(g.jid)).slice(0, 20);
+  const knownJids = new Set(knownRows.map((row) => row.jid));
+  const knownNames = new Set(knownRows.map((row) => row.canonicalGroupName));
+  const addable = selected.groups.filter((group) => !knownJids.has(group.jid) && !knownNames.has(group.canonicalName));
 
-  if (!addable.length) {
-    return {
-      text: `➕ *Add a channel*\n\n✅ Every group the worker can see (${groups.length}) is already connected.\n\nNothing left to add.`,
-      keyboard: [[{ text: "📋 All channels", callback_data: "channels" }], [{ text: "◀️ Back", callback_data: "m:ch" }]],
-      ephemeral: true,
-    };
-  }
+  const notes = [
+    "➕ *Authoritative groups*",
+    "",
+    addable.length
+      ? `Select an unbound approved source (${addable.length} available).`
+      : "No unbound approved group is available to add.",
+    selected.ambiguousNames.length
+      ? `⚠️ Duplicate JIDs withheld: ${selected.ambiguousNames.join(", ")}. Pin the intended JID in WA_GROUP_IDS first.`
+      : "",
+  ].filter(Boolean).join("\n");
 
   return {
-    text: `➕ *Add a channel*\n\n${addable.length} group${addable.length === 1 ? "" : "s"} not yet connected. Tap one to register it.\n\n_Already-connected groups are hidden here._`,
+    text: notes,
     keyboard: [
-      ...addable.map((g) => [{ text: `➕ ${(g.subject || g.jid!).slice(0, 36)}`, callback_data: `cadd:${shortJid(g.jid!)}` }]),
+      ...addable.map((group) => [{ text: `➕ ${group.canonicalName.slice(0, 36)}`, callback_data: `cadd:${shortJid(group.jid)}` }]),
+      [{ text: "📋 All channels", callback_data: "channels" }],
       [{ text: "◀️ Back", callback_data: "m:ch" }],
     ],
     ephemeral: true,
@@ -197,12 +251,14 @@ async function listAddableGroups(): Promise<Reply> {
 
 /** Active channels, as buttons that remove on tap. */
 async function listRemovableChannels(): Promise<Reply> {
-  const rows = await db
-    .select({ name: manufacturers.name, jid: manufacturers.sourceGroupId })
-    .from(manufacturers)
-    .where(and(isNotNull(manufacturers.sourceGroupId), eq(manufacturers.status, "active")))
-    .orderBy(manufacturers.name)
-    .limit(20);
+  const rows = distinctAuthoritativeChannels(
+    await db
+      .select({ name: manufacturers.name, jid: manufacturers.sourceGroupId, canonicalGroupName: manufacturers.canonicalGroupName })
+      .from(manufacturers)
+      .where(and(isNotNull(manufacturers.sourceGroupId), eq(manufacturers.status, "active")))
+      .orderBy(manufacturers.name)
+      .limit(20),
+  );
 
   if (!rows.length) {
     return { text: "➖ *Remove a channel*\n\nNo active channels.", keyboard: [[{ text: "◀️ Back", callback_data: "m:ch" }]], ephemeral: true };
@@ -219,13 +275,20 @@ async function listRemovableChannels(): Promise<Reply> {
 
 /** Step one of mapping: pick the channel. */
 async function listMappableChannels(): Promise<Reply> {
-  const rows = await db
-    .select({ name: manufacturers.name, jid: manufacturers.sourceGroupId, category: categories.name })
-    .from(manufacturers)
-    .leftJoin(categories, eq(categories.id, manufacturers.defaultCategoryId))
-    .where(and(isNotNull(manufacturers.sourceGroupId), eq(manufacturers.status, "active")))
-    .orderBy(manufacturers.name)
-    .limit(20);
+  const rows = distinctAuthoritativeChannels(
+    await db
+      .select({
+        name: manufacturers.name,
+        jid: manufacturers.sourceGroupId,
+        canonicalGroupName: manufacturers.canonicalGroupName,
+        category: categories.name,
+      })
+      .from(manufacturers)
+      .leftJoin(categories, eq(categories.id, manufacturers.defaultCategoryId))
+      .where(and(isNotNull(manufacturers.sourceGroupId), eq(manufacturers.status, "active")))
+      .orderBy(manufacturers.name)
+      .limit(20),
+  );
 
   if (!rows.length) {
     return {
@@ -259,13 +322,13 @@ async function listMappableChannels(): Promise<Reply> {
 async function listCategoriesFor(shortId: string): Promise<Reply> {
   const cats = await db.select({ name: categories.name, slug: categories.slug }).from(categories).orderBy(categories.position);
   const [mfr] = await db
-    .select({ name: manufacturers.name, current: categories.name })
+    .select({ name: manufacturers.name, canonicalGroupName: manufacturers.canonicalGroupName, current: categories.name })
     .from(manufacturers)
     .leftJoin(categories, eq(categories.id, manufacturers.defaultCategoryId))
     .where(eq(manufacturers.sourceGroupId, `${shortId}@g.us`))
     .limit(1);
 
-  if (!mfr) {
+  if (!mfr || !canonicalSupplierGroupName(mfr.canonicalGroupName ?? mfr.name)) {
     return { text: "That channel no longer exists.", keyboard: keyboardFor("m:ch"), ephemeral: true };
   }
 
@@ -284,67 +347,63 @@ async function listCategoriesFor(shortId: string): Promise<Reply> {
   };
 }
 
-/** Configured channels with a live ✅ / ❌ connection indicator. */
+/** Exactly the nine authoritative sources with live status where resolvable. */
 async function listChannels(): Promise<Reply> {
-  const rows = await db
-    .select({
-      name: manufacturers.name,
-      jid: manufacturers.sourceGroupId,
-      status: manufacturers.status,
-      category: categories.name,
-      products: manufacturers.totalProducts,
-    })
-    .from(manufacturers)
-    .leftJoin(categories, eq(categories.id, manufacturers.defaultCategoryId))
-    .where(isNotNull(manufacturers.sourceGroupId))
-    .orderBy(manufacturers.name);
+  const boundRows = distinctAuthoritativeChannels(
+    await db
+      .select({
+        name: manufacturers.name,
+        jid: manufacturers.sourceGroupId,
+        canonicalGroupName: manufacturers.canonicalGroupName,
+        status: manufacturers.status,
+        category: categories.name,
+        products: manufacturers.totalProducts,
+      })
+      .from(manufacturers)
+      .leftJoin(categories, eq(categories.id, manufacturers.defaultCategoryId))
+      .where(isNotNull(manufacturers.sourceGroupId)),
+  );
+  const byCanonical = new Map(boundRows.map((row) => [row.canonicalGroupName, row]));
 
-  if (!rows.length) {
-    return {
-      text: "📡 *Channels*\n\nNone configured yet.\n\nUse ➕ *Add channel* to connect a supplier group.",
-      keyboard: [[{ text: "➕ Add channel", callback_data: "h:add" }], [{ text: "◀️ Back", callback_data: "m:ch" }]],
-      ephemeral: true,
-    };
-  }
-
-  // "Connected" means the worker can actually see the group right now. A
-  // channel configured but invisible to WhatsApp ingests nothing and gives no
-  // error, which is the failure operators actually hit.
   const live = await workerFetch("/groups");
-  const visible = new Set<string>();
-  let reachable = false;
-  if (!("error" in live) || !live.error) {
-    reachable = true;
-    const body = (live as { body: Record<string, unknown> }).body;
-    for (const g of (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string }>) {
-      if (g.jid) visible.add(g.jid);
-    }
-  }
+  const liveByJid = new Set<string>();
+  const liveGroups = "error" in live && live.error
+    ? []
+    : ((live as { body: Record<string, unknown> }).body.groups as Array<{ jid?: string; subject?: string }> ?? []);
+  for (const group of selectAuthoritativeLiveGroups(liveGroups).groups) liveByJid.add(group.jid);
+  const reachable = !("error" in live && live.error);
 
-  const mark = (status: string, jid: string | null) => {
-    if (status === "blocked") return "🚫 removed";
-    if (status === "paused") return "⏸ paused";
-    if (!reachable) return "❔ unknown";
-    return jid && visible.has(jid) ? "✅ connected" : "❌ not connected";
-  };
-
-  const connected = rows.filter((r) => r.status === "active" && reachable && r.jid && visible.has(r.jid)).length;
+  const connected = approvedSupplierGroups.filter((configured) => {
+    const row = byCanonical.get(configured.name);
+    return Boolean(row?.status === "active" && row.jid && liveByJid.has(row.jid));
+  }).length;
 
   return {
     text: [
-      `📡 *Channels — ${connected}/${rows.length} connected*`,
-      reachable ? `_${visible.size} groups visible to the worker_` : "_⚠️ worker offline — status unknown_",
+      `📡 *Authoritative supplier groups — ${connected}/9 connected*`,
+      reachable ? "_Only configured sources are shown. New groups are ignored until explicitly configured._" : "_⚠️ worker offline — connection state unknown_",
       "",
-      ...rows.map((r) =>
-        [
-          `${mark(r.status, r.jid)}  *${r.name}*`,
-          `   🏷 ${r.category ?? "_no category_"}   📦 ${r.products}`,
-          `   \`${r.jid}\``,
-        ].join("\n"),
-      ),
+      ...approvedSupplierGroups.map((configured) => {
+        const row = byCanonical.get(configured.name);
+        if (!row) return `⚪ *${configured.name}*\n   awaiting first verified message`;
+        const state = row.status === "blocked"
+          ? "🚫 removed"
+          : row.status === "paused"
+            ? "⏸ paused"
+            : reachable && row.jid && liveByJid.has(row.jid)
+              ? "✅ connected"
+              : reachable
+                ? "❌ not connected"
+                : "❔ unknown";
+        return [
+          `${state}  *${configured.name}*`,
+          `   🏷 ${row.category ?? configured.category ?? "caption-based"}   📦 ${row.products ?? 0}`,
+          row.jid ? `   \`${row.jid}\`` : "",
+        ].filter(Boolean).join("\n");
+      }),
     ].join("\n"),
     keyboard: [
-      [{ text: "➕ Add", callback_data: "h:add" }, { text: "🏷 Map", callback_data: "h:map" }],
+      [{ text: "➕ Bind verified JID", callback_data: "h:add" }, { text: "🏷 Map", callback_data: "h:map" }],
       [{ text: "◀️ Back", callback_data: "m:ch" }],
     ],
     ephemeral: true,
@@ -555,49 +614,59 @@ export async function runCommand(command: string, args: string[], _chatId: strin
     if (action === "cpick") return listCategoriesFor(shortId);
 
     if (action === "cadd") {
-      // Name comes from the live WhatsApp subject so the operator never types it.
       const live = await workerFetch("/groups");
       const body = "error" in live && live.error ? {} : (live as { body: Record<string, unknown> }).body;
-      const groups = (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string; subject?: string }>;
-      const name = (groups.find((g) => g.jid === jid)?.subject || shortId).slice(0, 80);
-
-      const [existing] = await db.select().from(manufacturers).where(eq(manufacturers.sourceGroupId, jid)).limit(1);
-      if (existing) {
-        // Re-adding a soft-deleted channel reactivates rather than duplicating.
-        await db.update(manufacturers).set({ status: "active" }).where(eq(manufacturers.sourceGroupId, jid));
-        // Reactivated rows keep their old mapping; if there is none, finish the flow.
-        if (!existing.defaultCategoryId) return listCategoriesFor(shortId);
-        return { text: `✅ *${existing.name}* reactivated.`, keyboard: keyboardFor("m:ch"), ephemeral: true };
+      const rawGroups = (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string; subject?: string }>;
+      const selected = selectAuthoritativeLiveGroups(rawGroups).groups.find((group) => group.jid === jid);
+      if (!selected) {
+        return { text: "This JID is not an unambiguous configured supplier group. Refresh Authoritative groups after pinning the intended JID if needed.", keyboard: keyboardFor("m:ch"), ephemeral: true };
       }
 
-      const inferred = detectCategory("", name, null);
+      const canonicalName = selected.canonicalName;
+      const [byJid] = await db.select().from(manufacturers).where(eq(manufacturers.sourceGroupId, jid)).limit(1);
+      if (byJid) {
+        if (byJid.canonicalGroupName !== canonicalName) {
+          return { text: "That JID is already bound to a different supplier identity. No change was made.", keyboard: keyboardFor("m:ch") };
+        }
+        await db.update(manufacturers).set({ status: "active", autoPublish: true }).where(eq(manufacturers.id, byJid.id));
+        return { text: `✅ *${canonicalName}* reactivated. Valid media products publish automatically.`, keyboard: keyboardFor("m:ch"), ephemeral: true };
+      }
+
+      const [byName] = await db
+        .select()
+        .from(manufacturers)
+        .where(eq(manufacturers.canonicalGroupName, canonicalName))
+        .limit(1);
+      if (byName && byName.sourceGroupId !== jid) {
+        return { text: `⚠️ *${canonicalName}* is already bound to a different JID. No automatic merge was performed. Pin the intended JID in WA_GROUP_IDS before replacing it.`, keyboard: keyboardFor("m:ch") };
+      }
+
+      const configuredCategory = categoryForApprovedSupplierGroup(jid, canonicalName);
+      const inferred = configuredCategory ? { slug: configuredCategory, confidence: 1 } : detectCategory("", canonicalName, null);
       const [cat] = inferred.confidence > 0
         ? await db.select({ id: categories.id, name: categories.name }).from(categories).where(eq(categories.slug, inferred.slug)).limit(1)
         : [];
       await db.insert(manufacturers).values({
-        name,
-        slug: `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "supplier"}-${shortId.slice(0, 6)}`,
+        name: canonicalName,
+        slug: `${canonicalName.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "supplier"}-${shortId.slice(0, 6)}`,
         sourceGroupId: jid,
-        sourceGroupName: name,
+        sourceGroupName: selected.subject,
+        canonicalGroupName: canonicalName,
         defaultCategoryId: cat?.id ?? null,
         autoPublish: true,
         status: "active",
       }).onConflictDoNothing();
 
-      // A default category keeps merchandising consistent. Without one, valid
-      // supplier captions still classify and publish automatically.
-      if (!cat) return listCategoriesFor(shortId);
-
       return {
         text: [
-          `✅ *${name}* connected`,
+          `✅ *${canonicalName}* bound to its JID`,
           "",
-          `🏷 Category: *${cat.name}* _(inferred from the group name)_`,
+          `🏷 Category: *${cat?.name ?? "caption-based"}*`,
           "📦 Valid media products publish automatically.",
         ].join("\n"),
         keyboard: [
           [{ text: "🏷 Change category", callback_data: `cpick:${shortId}` }],
-          [{ text: "📋 All channels", callback_data: "channels" }],
+          [{ text: "📋 Authoritative groups", callback_data: "channels" }],
           [{ text: "◀️ Back", callback_data: "m:ch" }],
         ],
         ephemeral: true,
@@ -605,10 +674,18 @@ export async function runCommand(command: string, args: string[], _chatId: strin
     }
 
     if (action === "crm") {
+      const [candidate] = await db
+        .select({ id: manufacturers.id, name: manufacturers.name, canonicalGroupName: manufacturers.canonicalGroupName })
+        .from(manufacturers)
+        .where(eq(manufacturers.sourceGroupId, jid))
+        .limit(1);
+      if (!candidate || !canonicalSupplierGroupName(candidate.canonicalGroupName ?? candidate.name)) {
+        return { text: "That channel is not an authoritative supplier source.", keyboard: keyboardFor("m:ch"), ephemeral: true };
+      }
       const [removed] = await db
         .update(manufacturers)
         .set({ status: "blocked" })
-        .where(eq(manufacturers.sourceGroupId, jid))
+        .where(eq(manufacturers.id, candidate.id))
         .returning({ name: manufacturers.name });
       if (!removed) return { text: "That channel no longer exists.", keyboard: keyboardFor("m:ch"), ephemeral: true };
       await setSetting(CHANNEL_UNDO_KEY, jid);
@@ -622,10 +699,18 @@ export async function runCommand(command: string, args: string[], _chatId: strin
     if (action === "cmap") {
       const [cat] = await db.select({ id: categories.id, name: categories.name }).from(categories).where(eq(categories.slug, extra)).limit(1);
       if (!cat) return { text: `Unknown category \`${extra}\`.`, keyboard: keyboardFor("m:ch"), ephemeral: true };
+      const [candidate] = await db
+        .select({ id: manufacturers.id, name: manufacturers.name, canonicalGroupName: manufacturers.canonicalGroupName })
+        .from(manufacturers)
+        .where(eq(manufacturers.sourceGroupId, jid))
+        .limit(1);
+      if (!candidate || !canonicalSupplierGroupName(candidate.canonicalGroupName ?? candidate.name)) {
+        return { text: "That channel is not an authoritative supplier source.", keyboard: keyboardFor("m:ch"), ephemeral: true };
+      }
       const [updated] = await db
         .update(manufacturers)
         .set({ defaultCategoryId: cat.id })
-        .where(eq(manufacturers.sourceGroupId, jid))
+        .where(eq(manufacturers.id, candidate.id))
         .returning({ name: manufacturers.name });
       if (!updated) return { text: "That channel no longer exists.", keyboard: keyboardFor("m:ch"), ephemeral: true };
       return {

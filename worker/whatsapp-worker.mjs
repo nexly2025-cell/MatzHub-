@@ -21,6 +21,7 @@ import fs from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { fileURLToPath } from "node:url";
+import NodeCache from "@cacheable/node-cache";
 import QRCode from "qrcode";
 import mediaEngine from "./media-engine.mjs";
 import * as sessionStore from "./session-store.mjs";
@@ -56,6 +57,31 @@ const CONFIG = {
 
 const log = (event, data = {}) =>
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
+
+// Baileys uses this cache to bound retry receipts for missing sender keys.
+// It is intentionally process-local: actual sender-key material remains in the
+// persistent multi-file auth state and is backed up by session-store.mjs.
+const msgRetryCounterCache = new NodeCache({ stdTTL: 60 * 60 * 1000, useClones: false, maxKeys: 5_000 });
+const recentMessages = new Map();
+const groupMetadataCache = new Map();
+const canonicalJidBindings = new Map();
+const decryptFailures = new Map();
+const RECENT_MESSAGE_LIMIT = 1_000;
+
+function messageCacheKey(key) {
+  return `${key?.remoteJid || ""}:${key?.id || ""}`;
+}
+
+function rememberMessage(message) {
+  const key = messageCacheKey(message?.key);
+  if (!key || key === ":") return;
+  recentMessages.set(key, message?.message);
+  if (recentMessages.size > RECENT_MESSAGE_LIMIT) recentMessages.delete(recentMessages.keys().next().value);
+}
+
+function rememberGroupMetadata(metadata) {
+  if (metadata?.id) groupMetadataCache.set(metadata.id, metadata);
+}
 
 // Supplier source policy. JIDs are strongest when available; verified group
 // names are the safe bootstrap boundary before a live worker reports each JID.
@@ -114,7 +140,6 @@ function getMappedCategory(jid, groupName) {
  */
 function isAllowedGroup(jid, groupName = "") {
   if (CONFIG.groupIds.length) return CONFIG.groupIds.includes(jid);
-  if (Object.prototype.hasOwnProperty.call(GROUP_MAP, jid)) return true;
   if (Object.prototype.hasOwnProperty.call(GROUP_NAME_MAP, normaliseGroupName(groupName))) return true;
   // Optional development-only narrowing for temporary operational testing.
   if (CONFIG.groups.length) return CONFIG.groups.some((group) => groupName.toLowerCase().includes(group.toLowerCase()));
@@ -123,7 +148,7 @@ function isAllowedGroup(jid, groupName = "") {
 
 function watchedGroupCount() {
   if (CONFIG.groupIds.length) return CONFIG.groupIds.length;
-  return Object.keys(GROUP_MAP).length + Object.keys(GROUP_NAME_MAP).length;
+  return Object.keys(GROUP_NAME_MAP).length;
 }
 
 /* ------------------------------------------------------------------ */
@@ -220,13 +245,28 @@ async function flushAlbum(key) {
     };
     const mappedCategory = getMappedCategory(entry.jid, entry.groupName);
     if (mappedCategory) payload.category = mappedCategory;
+    log("INGEST_STARTED", { messageId: entry.messageId, jid: entry.jid, media: "album", images: urls.length });
     const result = await pushToMatzHub(payload);
     processed += 1;
     lastMessageAt = new Date().toISOString();
-    log("ingested_album", { messageId: entry.messageId, images: urls.length, stage: result?.results?.[0]?.stage });
+    logIngestionResult(result, { messageId: entry.messageId, jid: entry.jid, media: "album" });
   } catch (e) {
     failures += 1;
-    log("album_ingest_failed", { key, error: e.message });
+    log("INGEST_FAILED", { key, reason: e.message });
+  }
+}
+
+function logIngestionResult(result, context) {
+  const first = result?.results?.[0] ?? {};
+  const stage = String(first.stage ?? "unknown");
+  log("INGEST_SUCCESS", { ...context, stage, productId: first.productId, slug: first.slug });
+  if (stage === "published") {
+    log("PRODUCT_CREATED", { ...context, productId: first.productId, slug: first.slug });
+    log("PUBLICATION", { ...context, productId: first.productId, slug: first.slug });
+  } else if (stage === "updated") {
+    log("PRODUCT_UPDATED", { ...context, productId: first.productId, slug: first.slug });
+  } else if (stage === "deduped") {
+    log("PRODUCT_DEDUPED", { ...context, productId: first.productId, slug: first.slug });
   }
 }
 
@@ -410,7 +450,9 @@ async function start() {
     DisconnectReason,
     downloadMediaMessage,
     fetchLatestBaileysVersion,
+    proto,
   } = baileys;
+  const ciphertextStubType = proto.WebMessageInfo.StubType.CIPHERTEXT;
 
   fs.mkdirSync(CONFIG.sessionDir, { recursive: true });
   if (!newestKeyByJid.size) loadAnchors();
@@ -452,10 +494,33 @@ async function start() {
     printQRInTerminal: false,
     syncFullHistory: wantHistory,
     markOnlineOnConnect: false,
+    // Required for bounded retry receipts and sender-key redistribution. The
+    // cache never contains fabricated payloads: unknown messages resolve to
+    // undefined and Baileys follows its own retry protocol.
+    msgRetryCounterCache,
+    getMessage: async (key) => recentMessages.get(messageCacheKey(key)),
+    cachedGroupMetadata: async (jid) => groupMetadataCache.get(jid),
     browser: ["MatzHub Worker", "Chrome", "1.0.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
+
+  sock.ev.on("groups.upsert", (groups) => {
+    for (const group of groups ?? []) {
+      rememberGroupMetadata(group);
+      if (isAllowedGroup(group.id, group.subject)) {
+        log("GROUP_DISCOVERED", { jid: group.id, name: group.subject ?? "" });
+      } else {
+        log("GROUP_REJECTED", { jid: group.id, reason: "not_authoritative" });
+      }
+    }
+  });
+  sock.ev.on("groups.update", (updates) => {
+    for (const update of updates ?? []) if (update.id) groupMetadataCache.delete(update.id);
+  });
+  sock.ev.on("group-participants.update", (update) => {
+    if (update?.id) groupMetadataCache.delete(update.id);
+  });
 
   sock.ev.on("connection.update", async ({ connection, lastDisconnect, qr }) => {
     // A superseded socket must never drive state or schedule reconnects.
@@ -472,7 +537,7 @@ async function start() {
       connectionState = "connected";
       reconnectAttempts = 0; // healthy again — reset backoff
       escalated = false;     // and re-arm escalation for any future outage
-      log("connected", { watchedGroups: watchedGroupCount() });
+      log("WHATSAPP_CONNECTED", { watchedGroups: watchedGroupCount() });
       // Session is now paired — the QR is stale and would only mislead the
       // next operator. Drop it from memory and disk. Best-effort; never fatal.
       lastQr = null;
@@ -486,7 +551,7 @@ async function start() {
       const loggedOut = code === DisconnectReason.loggedOut;
       const replaced = code === DisconnectReason.connectionReplaced; // 440
       connectionState = loggedOut ? "logged_out" : replaced ? "replaced" : "reconnecting";
-      log("disconnected", { code, loggedOut, replaced });
+      log("WHATSAPP_DISCONNECTED", { code, loggedOut, replaced });
 
       if (loggedOut) {
         log("session_invalid", { fix: `delete ${CONFIG.sessionDir} and rescan the QR` });
@@ -507,28 +572,58 @@ async function start() {
   // the dedupe, media and category rules can never drift between the two.
   async function ingestMessages(messages) {
     for (const m of messages) {
-      const anchorJid = m?.key?.remoteJid;
-      if (anchorJid && m.key?.id) {
-        const ts = Number(m.messageTimestamp || 0) || Math.floor(Date.now() / 1000);
-        const prev = newestKeyByJid.get(anchorJid);
-        if (!prev || ts >= prev.ts) {
-          newestKeyByJid.set(anchorJid, { key: m.key, ts });
-          saveAnchorsSoon();
-        }
-      }
       try {
-        const jid = m.key.remoteJid || "";
-        if (!jid.endsWith("@g.us")) continue; // groups only
-        if (m.key.fromMe) continue;
+        const jid = m?.key?.remoteJid || "";
+        const messageId = m?.key?.id || "unknown";
+        if (!jid.endsWith("@g.us") || m?.key?.fromMe) continue; // supplier groups only
+
+        log("MESSAGE_RECEIVED", { messageId, jid });
+        const cacheKey = messageCacheKey(m.key);
+        const isCiphertextStub = m?.messageStubType === ciphertextStubType;
+        if (!m?.message || isCiphertextStub) {
+          // A ciphertext stub is emitted after Baileys attempted decryption;
+          // Baileys itself sends the bounded retry receipt for this condition.
+          // Never anchor or ingest it until a real decrypted payload arrives.
+          decryptFailures.set(cacheKey, Date.now());
+          if (decryptFailures.size > RECENT_MESSAGE_LIMIT) decryptFailures.delete(decryptFailures.keys().next().value);
+          log("MESSAGE_DECRYPT_FAILED", { messageId, jid, reason: isCiphertextStub ? "ciphertext_stub" : "no_decrypted_payload" });
+          if (isCiphertextStub) log("RETRY_REQUESTED", { messageId, jid, by: "baileys" });
+          continue;
+        }
 
         // Resolve the human-readable group name for supplier mapping.
         let groupName = "";
         try {
-          groupName = (await sock.groupMetadata(jid)).subject || "";
+          const metadata = await sock.groupMetadata(jid);
+          rememberGroupMetadata(metadata);
+          groupName = metadata.subject || "";
         } catch {
           groupName = "";
         }
-        if (!isAllowedGroup(jid, groupName)) continue;
+        if (!isAllowedGroup(jid, groupName)) {
+          log("GROUP_REJECTED", { messageId, jid, reason: "not_authoritative" });
+          continue;
+        }
+        const canonicalName = normaliseGroupName(groupName);
+        const boundJid = canonicalJidBindings.get(canonicalName);
+        if (boundJid && boundJid !== jid) {
+          log("GROUP_REJECTED", { messageId, jid, reason: "canonical_name_bound_to_other_jid" });
+          continue;
+        }
+        canonicalJidBindings.set(canonicalName, jid);
+
+        const ts = Number(m.messageTimestamp || 0) || Math.floor(Date.now() / 1000);
+        const previousAnchor = newestKeyByJid.get(jid);
+        if (!previousAnchor || ts >= previousAnchor.ts) {
+          newestKeyByJid.set(jid, { key: m.key, ts });
+          saveAnchorsSoon();
+        }
+        rememberMessage(m);
+        if (decryptFailures.delete(cacheKey)) {
+          log("MESSAGE_RETRY_DECRYPTED", { messageId, jid, group: groupName });
+        } else {
+          log("MESSAGE_DECRYPTED", { messageId, jid, group: groupName });
+        }
 
         const imageMsg = m.message?.imageMessage || null;
         const videoMsg = m.message?.videoMessage || null;
@@ -583,14 +678,15 @@ async function start() {
         };
         if (mappedCategory) payload.category = mappedCategory;
 
+        log("INGEST_STARTED", { messageId, jid, media: videoMsg ? "video" : "text" });
         const result = await pushToMatzHub(payload);
 
         processed += 1;
         lastMessageAt = new Date().toISOString();
-        log("ingested", { messageId: m.key.id, group: groupName, stage: result?.results?.[0]?.stage });
+        logIngestionResult(result, { messageId, jid, media: videoMsg ? "video" : "text" });
       } catch (error) {
         failures += 1;
-        log("ingest_failed", { messageId: m.key?.id, error: error.message });
+        log("INGEST_FAILED", { messageId: m.key?.id, reason: error.message });
       }
     }
   }
@@ -600,6 +696,18 @@ async function start() {
     // history sync. Both are real supplier content, so both are ingested.
     if (type !== "notify" && type !== "append") return;
     await ingestMessages(messages);
+  });
+
+  // When Baileys obtains sender-key material after a retry receipt it may emit
+  // the recovered payload as an update instead of a fresh upsert. Only retry
+  // messages we previously marked as undecrypted; never replay arbitrary edits.
+  sock.ev.on("messages.update", async (updates) => {
+    for (const entry of updates ?? []) {
+      const cacheKey = messageCacheKey(entry?.key);
+      const recovered = entry?.update?.message;
+      if (!recovered || !decryptFailures.has(cacheKey)) continue;
+      await ingestMessages([{ key: entry.key, message: recovered, messageTimestamp: entry?.update?.messageTimestamp }]);
+    }
   });
 
   // WhatsApp pushes recent history after a connect made with syncFullHistory,
@@ -623,6 +731,7 @@ async function start() {
     let requested = 0;
     const groups = await sock.groupFetchAllParticipating().catch(() => ({}));
     for (const [jid, meta] of Object.entries(groups || {})) {
+      if (meta) rememberGroupMetadata({ ...meta, id: jid });
       const subject = meta?.subject || "";
       if (!isAllowedGroup(jid, subject)) continue;
       const anchor = newestKeyByJid.get(jid);
@@ -789,10 +898,16 @@ http
       if (connectionState !== "connected") return json(503, { error: `whatsapp ${connectionState}` });
       try {
         const groups = await sock.groupFetchAllParticipating?.();
+        if (Array.isArray(groups)) {
+          for (const group of groups) rememberGroupMetadata(group);
+        } else {
+          for (const [jid, group] of Object.entries(groups || {})) rememberGroupMetadata({ ...group, id: jid });
+        }
         const list = Array.isArray(groups)
           ? groups.map((g) => ({ jid: g.id, subject: g.subject, owner: g.owner, size: g.participants ? Object.keys(g.participants).length : null }))
           : Object.entries(groups || {}).map(([jid, g]) => ({ jid, subject: g.subject, owner: g.owner, size: g.participants ? Object.keys(g.participants).length : null }));
-        return json(200, { ok: true, groups: list });
+        const authoritative = list.filter((group) => isAllowedGroup(group.jid, group.subject));
+        return json(200, { ok: true, groups: authoritative });
       } catch (e) {
         return json(500, { ok: false, error: e.message });
       }
@@ -808,7 +923,8 @@ http
         try {
           const { to, text } = JSON.parse(body);
           const jid = String(to).includes("@") ? to : `${String(to).replace(/\D/g, "")}@s.whatsapp.net`;
-          await sock.sendMessage(jid, { text });
+          const sent = await sock.sendMessage(jid, { text });
+          rememberMessage(sent);
           json(200, { ok: true });
         } catch (e) {
           json(500, { ok: false, error: e.message });
@@ -876,7 +992,7 @@ function startCronScheduler() {
   void trigger("notify");
 }
 
-log("starting", { api: CONFIG.apiUrl, session: CONFIG.sessionDir });
+log("WORKER_START", { api: CONFIG.apiUrl, session: CONFIG.sessionDir });
 void safeStart("boot");
 startCronScheduler();
 

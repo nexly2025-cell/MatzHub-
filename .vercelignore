@@ -1,7 +1,9 @@
 # The WhatsApp worker is a persistent process that runs elsewhere. Its session
 # directory holds live authentication state and must never be uploaded to a
-# serverless deployment.
-worker/
+# serverless deployment. The approved-group mapping is shared read-only policy
+# required by the Vercel ingestion endpoint.
+worker/*
+!worker/group-mapping.json
 
 # Secrets live in Vercel's encrypted environment, never in the bundle.
 .env

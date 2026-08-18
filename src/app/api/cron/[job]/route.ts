@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { and, eq, isNull, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { automationRuns, carts, ingestionEvents, notifications, opsTasks, products, settings } from "@/db/schema";
+import { automationRuns, carts, ingestionEvents, manufacturers, notifications, opsTasks, products, settings } from "@/db/schema";
 import { runExpiryJob, runSupplierScoreJob, runTrendingJob } from "@/lib/ingest";
 import { relativeTime } from "@/lib/utils";
 import { dispatchNotifications, retryFailedNotifications } from "@/lib/notify";
@@ -93,8 +93,16 @@ async function selfHealJob() {
   const t0 = Date.now();
   // 1. Messages stuck in 'received' > 15 min are probably orphaned; re-run enrich.
   const stuck = await db
-    .select({ id: ingestionEvents.id, messageId: ingestionEvents.messageId, rawCaption: ingestionEvents.rawCaption, rawImageUrl: ingestionEvents.rawImageUrl })
+    .select({
+      id: ingestionEvents.id,
+      messageId: ingestionEvents.messageId,
+      rawCaption: ingestionEvents.rawCaption,
+      rawImageUrl: ingestionEvents.rawImageUrl,
+      groupId: ingestionEvents.sourceGroupId,
+      groupName: manufacturers.sourceGroupName,
+    })
     .from(ingestionEvents)
+    .leftJoin(manufacturers, eq(manufacturers.id, ingestionEvents.manufacturerId))
     .where(and(eq(ingestionEvents.stage, "received"), lte(ingestionEvents.createdAt, new Date(Date.now() - 15 * 60000))))
     .limit(50)
     .catch(() => []);
@@ -102,10 +110,24 @@ async function selfHealJob() {
   const { ingestMessage } = await import("@/lib/ingest");
   for (const e of stuck) {
     try {
-      if (!e.messageId) continue;
-      await ingestMessage({ messageId: e.messageId, caption: e.rawCaption, imageUrl: e.rawImageUrl, source: "whatsapp" });
-      await db.update(ingestionEvents).set({ stage: "healed" }).where(eq(ingestionEvents.id, e.id));
-      requeued += 1;
+      if (!e.messageId || !e.groupId || !e.groupName) {
+        await db.update(ingestionEvents).set({ stage: "failed", error: "self-heal skipped: authoritative group context unavailable" }).where(eq(ingestionEvents.id, e.id));
+        continue;
+      }
+      const result = await ingestMessage({
+        messageId: e.messageId,
+        caption: e.rawCaption,
+        imageUrl: e.rawImageUrl,
+        groupId: e.groupId,
+        groupName: e.groupName,
+        source: "whatsapp",
+      });
+      if (["published", "deduped", "updated"].includes(result.stage)) {
+        await db.update(ingestionEvents).set({ stage: "healed" }).where(eq(ingestionEvents.id, e.id));
+        requeued += 1;
+      } else {
+        await db.update(ingestionEvents).set({ stage: "failed", error: `self-heal result: ${result.stage}` }).where(eq(ingestionEvents.id, e.id));
+      }
     } catch {
       await db.update(ingestionEvents).set({ stage: "failed", error: "self-heal retry failed" }).where(eq(ingestionEvents.id, e.id));
     }

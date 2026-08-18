@@ -31,7 +31,7 @@ export async function classifyMessage(args: {
   caption: string;
   imageUrl: string | null;
   manufacturerId: string;
-  contentHash: string;
+  contentHash: string | null;
   imageHash: string | null;
 }): Promise<UpdateResolution> {
   const { messageId, caption, imageUrl, manufacturerId, contentHash, imageHash } = args;
@@ -57,7 +57,7 @@ export async function classifyMessage(args: {
     if (p.messageId === messageId) {
       return { action: "update", productId: p.id, changes: ["repost"] };
     }
-    if (p.imageHash === imageHash && p.contentHash === contentHash && p.messageId === messageId) {
+    if (imageHash && contentHash && p.imageHash === imageHash && p.contentHash === contentHash && p.messageId === messageId) {
       return { action: "reject_duplicate", originalProductId: p.id, reason: "exact duplicate" };
     }
     const imgSim = p.imageHash && imageHash ? imageHashSimilarity(p.imageHash, imageHash) : 0;
@@ -90,7 +90,7 @@ export async function applyResolution(
     messageId: string;
     caption: string;
     imageUrl: string | null;
-    contentHash: string;
+    contentHash: string | null;
     imageHash: string | null;
     enrichment: { costPrice: number; qualityScore: number; confidence: number };
   },

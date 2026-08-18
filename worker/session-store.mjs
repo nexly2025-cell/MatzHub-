@@ -80,9 +80,9 @@ export async function uploadCreds(log) {
         log("session_backup_file_failed", { file: relativePath, status: res.status });
       }
     }
-    if (uploaded) log("session_backed_up", { files: uploaded, bytes });
+    if (uploaded) log("SESSION_BACKUP", { files: uploaded, bytes });
   } catch (e) {
-    log("session_backup_failed", { error: e.message });
+    log("SESSION_BACKUP_FAILED", { error: e.message });
   }
 }
 
@@ -105,7 +105,7 @@ export async function restoreCreds(log) {
       body: JSON.stringify({ prefix: `${PREFIX}/`, limit: 1000 }),
     });
     if (!listRes.ok) {
-      log("session_list_failed", { status: listRes.status });
+      log("SESSION_RESTORE_FAILED", { status: listRes.status });
       return false;
     }
     const list = await listRes.json();
@@ -134,12 +134,12 @@ export async function restoreCreds(log) {
       bytes += body.length;
     }
     if (restored) {
-      log("session_restored", { files: restored, bytes });
+      log("SESSION_RESTORED", { files: restored, bytes });
       return true;
     }
     return false;
   } catch (e) {
-    log("session_restore_failed", { error: e.message });
+    log("SESSION_RESTORE_FAILED", { error: e.message });
     return false;
   }
 }

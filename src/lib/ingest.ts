@@ -16,7 +16,11 @@ import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectC
 import { isAutoUploadEnabled } from "@/lib/telegram";
 import { uploadsPermitted } from "@/lib/subscription";
 import { classifyMessage, applyResolution } from "@/lib/reconcile";
-import { categoryForApprovedSupplierGroup, isApprovedSupplierGroup } from "@/lib/supplier-groups";
+import {
+  canonicalSupplierGroupName,
+  categoryForApprovedSupplierGroup,
+  isApprovedSupplierGroup,
+} from "@/lib/supplier-groups";
 
 export type RawMessage = {
   messageId: string;
@@ -46,6 +50,12 @@ const sha = (v: string) => crypto.createHash("sha256").update(v).digest("hex");
 
 const normalizeCaption = (c: string) =>
   c.toLowerCase().replace(/(?:₹|rs\.?|inr)\s*[0-9,]+/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+
+/** Empty supplier captions intentionally have no semantic duplicate key. */
+export const contentFingerprint = (caption: string) => {
+  const normalized = normalizeCaption(caption);
+  return normalized ? sha(normalized) : null;
+};
 
 async function uniqueSlug(base: string): Promise<string> {
   const root = slugify(base) || `product-${Date.now()}`;
@@ -86,6 +96,12 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     return { messageId: msg.messageId, stage: "rejected", reason: "empty message" };
   }
 
+  const canonicalGroupName = canonicalSupplierGroupName(msg.groupName);
+  if (!msg.groupId || !canonicalGroupName || !isApprovedSupplierGroup(msg.groupId, msg.groupName)) {
+    await log("rejected", { error: "group_not_authoritative" });
+    return { messageId: msg.messageId, stage: "rejected", reason: "group not authoritative" };
+  }
+
   // ---- 0a. SUPPLIER ACKNOWLEDGEMENT: any group message matching
   // "DONE/OK/ACCEPTED/SHIPPED MH######XXXX" flips those order items to accepted.
   // Runs before anything else so supplier confirmations never turn into products.
@@ -105,25 +121,31 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     return { messageId: msg.messageId, stage: "deduped" };
   }
 
-  // ---- 1. resolve manufacturer from the group it was posted in --------
-  let mfr = msg.groupId
-    ? (await db.select().from(manufacturers).where(eq(manufacturers.sourceGroupId, msg.groupId)).limit(1))[0]
-    : undefined;
-  if (!mfr && msg.groupName) {
-    mfr = (await db.select().from(manufacturers).where(eq(manufacturers.sourceGroupName, msg.groupName)).limit(1))[0];
+  // ---- 1. resolve the single canonical supplier identity ---------------
+  let mfr = (await db.select().from(manufacturers).where(eq(manufacturers.sourceGroupId, msg.groupId)).limit(1))[0];
+  if (!mfr) {
+    const [boundName] = await db
+      .select()
+      .from(manufacturers)
+      .where(eq(manufacturers.canonicalGroupName, canonicalGroupName))
+      .limit(1);
+    if (boundName && boundName.sourceGroupId !== msg.groupId) {
+      // A copied or renamed group with the same display name is not an alias.
+      // Only an explicit WA_GROUP_IDS update may authorize a replacement JID.
+      await log("rejected", { error: "canonical_group_already_bound" });
+      return { messageId: msg.messageId, stage: "rejected", reason: "duplicate supplier group jid" };
+    }
+    mfr = boundName;
   }
-  // Self-registration binds a verified supplier group to its real JID on the
-  // first incoming post. Exact approved group names provide the bootstrap
-  // boundary; the resulting JID becomes the durable manufacturer binding.
-  // Dedicated names supply a deterministic category, while the premium/luxury
-  // group classifies from its actual product caption. Operators may refine a
-  // default category later without blocking publication.
-  if (!mfr && msg.groupId) {
+
+  // The first real message binds an approved canonical name to its stable JID.
+  // Dedicated groups carry a fixed category; premium/luxury uses its caption.
+  if (!mfr) {
     const configuredCategory = categoryForApprovedSupplierGroup(msg.groupId, msg.groupName);
     const inferred = configuredCategory
       ? { slug: configuredCategory, confidence: 1 }
       : detectCategory("", msg.groupName ?? null, null);
-    const name = (msg.groupName || msg.groupId).slice(0, 80);
+    const name = canonicalGroupName.slice(0, 80);
     const [cat] = inferred.confidence > 0
       ? await db.select({ id: categories.id }).from(categories).where(eq(categories.slug, inferred.slug)).limit(1)
       : [];
@@ -134,50 +156,44 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         slug: `${name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 48) || "supplier"}-${msg.groupId.slice(0, 6)}`,
         sourceGroupId: msg.groupId,
         sourceGroupName: msg.groupName ?? null,
+        canonicalGroupName,
         defaultCategoryId: cat?.id ?? null,
-        // The ingestion API accepts only verified supplier groups. Their real
-        // product posts are public automatically; there is no admin approval
-        // step between a valid supplier message and the storefront.
-        autoPublish: isApprovedSupplierGroup(msg.groupId, msg.groupName),
+        autoPublish: true,
         status: "active",
       })
       .onConflictDoNothing()
       .returning();
     if (created) {
       mfr = created;
-      await log("supplier_autoregistered", { group: name, category: cat ? inferred.slug : "unclassified" });
+      await log("supplier_autoregistered", { group: name, category: cat ? inferred.slug : "caption" });
       await db.insert(opsTasks).values({
         kind: "supplier",
         severity: "low",
-        title: `New supplier group registered: ${name}`,
+        title: `Authoritative supplier group bound: ${name}`,
         detail: cat
           ? `Category set to "${inferred.slug}". Valid media posts publish automatically.`
-          : "Category will be inferred from each real product caption. Valid media posts publish automatically.",
+          : "Category is derived from each valid product caption. Media posts publish automatically.",
         actionUrl: "/admin/suppliers",
       });
+    } else {
+      const [winner] = await db.select().from(manufacturers).where(eq(manufacturers.canonicalGroupName, canonicalGroupName)).limit(1);
+      if (!winner || winner.sourceGroupId !== msg.groupId) {
+        await log("rejected", { error: "canonical_group_race_or_duplicate" });
+        return { messageId: msg.messageId, stage: "rejected", reason: "duplicate supplier group jid" };
+      }
+      mfr = winner;
     }
   }
 
-  if (!mfr) {
-    await log("needs_review", { error: "unmapped source group" });
-    await db.insert(opsTasks).values({
-      kind: "supplier",
-      severity: "high",
-      title: `Unmapped WhatsApp group: ${msg.groupName ?? msg.groupId ?? "unknown"}`,
-      detail: "A message arrived from a group not bound to any manufacturer. Verify the configured supplier group registry.",
-      actionUrl: "/admin/suppliers",
-    });
-    return { messageId: msg.messageId, stage: "needs_review", reason: "unmapped group" };
-  }
-
-  const approvedSource = isApprovedSupplierGroup(msg.groupId, msg.groupName);
-  if (approvedSource && !mfr.autoPublish) {
+  if (!mfr.autoPublish) {
     await db.update(manufacturers).set({ autoPublish: true }).where(eq(manufacturers.id, mfr.id));
     mfr = { ...mfr, autoPublish: true };
   }
 
   // ---- 2. deduplication (message id, image hash, semantic caption) ----
-  const captionHash = sha(normalizeCaption(caption));
+  // Never fingerprint an empty caption: every image-only supplier post would
+  // otherwise share sha256("") and be falsely collapsed into one product.
+  const captionHash = contentFingerprint(caption);
   const imageHash = msg.imageUrl ? sha(msg.imageUrl) : null;
 
   // ---- 2b. update reconciliation (needs imageUrl as string|null, not undefined)
@@ -210,7 +226,7 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       .where(
         or(
           eq(products.messageId, msg.messageId),
-          eq(products.contentHash, captionHash),
+          captionHash ? eq(products.contentHash, captionHash) : sql`false`,
           imageHash ? eq(products.imageHash, imageHash) : sql`false`,
         ),
       )
@@ -298,7 +314,7 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
 
   const expiresAt = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000);
 
-  const [created] = await db
+  const inserted = await db
     .insert(products)
     .values({
       slug,
@@ -343,7 +359,26 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       publishedAt: autoOk ? new Date() : null,
       expiresAt,
     })
+    .onConflictDoNothing()
     .returning({ id: products.id, slug: products.slug });
+  const created = inserted[0];
+
+  if (!created) {
+    const [winner] = await db
+      .select({ id: products.id, slug: products.slug })
+      .from(products)
+      .where(
+        or(
+          eq(products.messageId, msg.messageId),
+          captionHash ? eq(products.contentHash, captionHash) : sql`false`,
+          imageHash ? eq(products.imageHash, imageHash) : sql`false`,
+        ),
+      )
+      .limit(1);
+    if (!winner) throw new Error("product insert conflicted without an identifiable duplicate");
+    await log("deduped", { productId: winner.id, race: true });
+    return { messageId: msg.messageId, stage: "deduped", productId: winner.id, slug: winner.slug };
+  }
 
   if (enrichment.variants.length) {
     await db.insert(productVariants).values(

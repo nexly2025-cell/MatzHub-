@@ -81,6 +81,9 @@ export const manufacturers = pgTable(
     sourceChannel: text("source_channel").notNull().default("whatsapp"),
     sourceGroupId: text("source_group_id"),
     sourceGroupName: text("source_group_name"),
+    // Normalized configured name. One authoritative supplier identity maps to
+    // one canonical JID; duplicate-name groups cannot silently become aliases.
+    canonicalGroupName: text("canonical_group_name"),
     defaultCategoryId: uuid("default_category_id"),
     // Pricing is global. Cost×1.40 original, cost×1.15 selling. This column records the applied margin.
     autoPublish: boolean("auto_publish").notNull().default(true),
@@ -101,6 +104,7 @@ export const manufacturers = pgTable(
     // Looked up once per ingested WhatsApp message to resolve the supplier.
     // Without this the ingestion hot path is a sequential scan.
     uniqueIndex("manufacturers_source_group_uidx").on(t.sourceGroupId),
+    uniqueIndex("manufacturers_canonical_group_uidx").on(t.canonicalGroupName),
   ],
 );
 
@@ -210,10 +214,13 @@ export const products = pgTable(
   (t) => [
     uniqueIndex("products_slug_uidx").on(t.slug),
     uniqueIndex("products_sku_uidx").on(t.sku),
+    // Webhook, worker, and history retries must converge at the database edge.
+    uniqueIndex("products_message_uidx").on(t.messageId),
+    uniqueIndex("products_content_hash_uidx").on(t.contentHash),
+    uniqueIndex("products_image_hash_uidx").on(t.imageHash),
     index("products_status_cat_idx").on(t.status, t.categoryId),
     index("products_trending_idx").on(t.trendingScore),
     index("products_published_idx").on(t.publishedAt),
-    index("products_content_hash_idx").on(t.contentHash),
     index("products_manufacturer_idx").on(t.manufacturerId),
     // Scale: the hottest catalogue read path (published + category, sorted by trending)
     index("products_cat_trend_idx").on(t.categoryId, t.trendingScore, t.id),

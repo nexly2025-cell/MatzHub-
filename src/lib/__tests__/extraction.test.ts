@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { deterministicEnrich, normalizeCategoryAlias } from "@/lib/ai";
+import { contentFingerprint } from "@/lib/ingest";
 
 const msg = (caption: string) => ({ caption, imageUrl: "https://x/i.webp", groupName: null, defaultCategory: null, category: null });
 
@@ -49,6 +50,17 @@ describe("category-specific extraction", () => {
     expect(e.categorySlug).toBe("apparel");
     expect(e.specs.GSM).toBe("220");
     expect(e.specs.Fit).toMatch(/slim/i);
+  });
+});
+
+describe("caption duplicate fingerprints", () => {
+  it("does not fingerprint empty image-only captions", () => {
+    expect(contentFingerprint("")).toBeNull();
+    expect(contentFingerprint("   \n  ")).toBeNull();
+  });
+
+  it("keeps a stable semantic fingerprint for meaningful captions", () => {
+    expect(contentFingerprint("Premium watch Rs 1200")).toBe(contentFingerprint("premium watch Rs 999"));
   });
 });
 

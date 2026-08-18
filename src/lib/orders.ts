@@ -4,6 +4,7 @@ import crypto from "node:crypto";
 import { and, eq, gte, inArray, ne, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { carts, notifications, orderItems, orders, productVariants, products } from "@/db/schema";
+import { log } from "@/lib/tracing";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const PHONE = /^(?:91)?([6-9]\d{9})$/;
@@ -139,7 +140,10 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
   };
 
   const alreadyCreated = await findExisting();
-  if (alreadyCreated) return alreadyCreated;
+  if (alreadyCreated) {
+    log.info("ORDER_DUPLICATE", { orderNo: alreadyCreated.orderNo, reason: "submission_key" });
+    return alreadyCreated;
+  }
 
   try {
     return await db.transaction(async (tx) => {
@@ -149,6 +153,7 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
         .where(eq(orders.submissionKey, raw.submissionKey))
         .limit(1);
       if (existing?.accessToken) {
+        log.info("ORDER_DUPLICATE", { orderNo: existing.orderNo, reason: "transaction_race" });
         return { orderNo: existing.orderNo, accessToken: existing.accessToken, total: existing.total, created: false };
       }
 
@@ -296,13 +301,17 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
         },
       ]);
 
+      log.info("ORDER_CREATED", { orderNo, total, lineItems: resolved.length });
       return { orderNo, accessToken, total, created: true };
     });
   } catch (error) {
     if (error instanceof OrderRequestError) throw error;
     if (uniqueViolation(error)) {
       const duplicate = await findExisting();
-      if (duplicate) return duplicate;
+      if (duplicate) {
+        log.info("ORDER_DUPLICATE", { orderNo: duplicate.orderNo, reason: "unique_constraint" });
+        return duplicate;
+      }
     }
     throw new OrderRequestError("We could not submit your order. Please try again.", 500, "order_failed");
   }
