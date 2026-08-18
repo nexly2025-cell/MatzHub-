@@ -158,10 +158,16 @@ async function repin(bot: BotKind, chatId: string, kind: "panel" | "dashboard", 
 
   const [prev] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
   if (prev?.value) {
+    const previousId = Number(prev.value);
     await fetch(API(token, "unpinChatMessage"), {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, message_id: Number(prev.value) }),
+      body: JSON.stringify({ chat_id: chatId, message_id: previousId }),
     }).catch(() => undefined);
+    // A panel is a replaceable control surface, not an audit record. Removing
+    // its predecessor prevents `/panel` retries from leaving a stack of stale
+    // keyboards in the operator chat. Failure is harmless (e.g. user removed
+    // it first) and must never block the new panel.
+    await deleteMessage(bot, chatId, previousId);
   }
 
   await fetch(API(token, "pinChatMessage"), {
