@@ -29,7 +29,7 @@ const PEOPLE = [
     role: "Co-Founder",
     instagram: SITE.cofounder.instagram,
     name: "Salman Khan GA",
-    initials: "MS",
+    initials: "SK",
     note: "Runs operations and fulfilment across all partner channels. Makes sure every piece we list matches reality.",
   },
 ];

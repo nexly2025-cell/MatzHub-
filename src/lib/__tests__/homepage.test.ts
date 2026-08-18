@@ -22,11 +22,15 @@ describe("homepage never regains a search hero", () => {
     expect(src.indexOf('id="collections"')).toBeLessThan(src.indexOf("Featured"));
   });
 
-  it("keeps the header search overlay conditionally mounted", async () => {
+  it("has no search bar in the header either", async () => {
     const src = await readFile("src/components/Header.tsx", "utf8");
-    // Mounting only when open is what stops the panel painting over the page.
-    expect(src).toContain("{searchOpen && (");
-    // aria-hidden alone is not sufficient; it leaves the panel painted.
-    expect(src).not.toMatch(/aria-hidden=\{!searchOpen\}/);
+    // The storefront is browse-first: six categories, no free-text search.
+    // The header previously carried a full-screen search overlay that
+    // contradicted that and painted over the page on load. It is gone; these
+    // assertions make its return a build failure.
+    expect(src).not.toContain("searchOpen");
+    expect(src).not.toMatch(/<input/);
+    expect(src).not.toMatch(/type="search"/i);
+    expect(src).not.toMatch(/Search the catalogue/i);
   });
 });
