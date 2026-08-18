@@ -20,6 +20,9 @@ jobs:
       - name: Typecheck
         run: npx next typegen && npm exec tsc -- --noEmit --pretty false
 
+      - name: Lint
+        run: npm run lint
+
       - name: Tests
         run: npm test
 

@@ -1,12 +1,16 @@
 import { drizzle } from "drizzle-orm/node-postgres";
 import { Pool } from "pg";
 
-// Fallback to real Supabase database if local localhost/127.0.0.1 is injected by sandbox preview
-const databaseUrl =
-  process.env.DATABASE_URL &&
-  (process.env.DATABASE_URL.includes("127.0.0.1") || process.env.DATABASE_URL.includes("localhost"))
-    ? "postgresql://postgres.wfzdccgdpzebpviqasli:l7Pa8Dlti2jgzsEm@aws-0-ap-south-1.pooler.supabase.com:5432/postgres"
-    : process.env.DATABASE_URL || "postgresql://postgres.wfzdccgdpzebpviqasli:l7Pa8Dlti2jgzsEm@aws-0-ap-south-1.pooler.supabase.com:5432/postgres";
+/**
+ * Connection string comes from the environment. Nothing else.
+ *
+ * A previous revision hardcoded a live Supabase pooler URL *including the
+ * password* as a fallback, and additionally rewrote any localhost DATABASE_URL
+ * to point at it. That committed a production credential to git and made every
+ * local/preview process write to the production database. Both are removed:
+ * the credential must be rotated in Supabase and set via DATABASE_URL only.
+ */
+const databaseUrl = process.env.DATABASE_URL;
 
 if (!databaseUrl) {
   throw new Error("DATABASE_URL is required");
