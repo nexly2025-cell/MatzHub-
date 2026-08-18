@@ -12,7 +12,7 @@ import {
   productVariants,
   products,
 } from "@/db/schema";
-import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory } from "@/lib/ai";
+import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory, isAuthoritativeGroup } from "@/lib/ai";
 import { isAutoUploadEnabled } from "@/lib/telegram";
 import { uploadsPermitted } from "@/lib/subscription";
 import { classifyMessage, applyResolution } from "@/lib/reconcile";
@@ -46,9 +46,6 @@ const sha = (v: string) => crypto.createHash("sha256").update(v).digest("hex");
 const normalizeCaption = (c: string) =>
   c.toLowerCase().replace(/(?:₹|rs\.?|inr)\s*[0-9,]+/g, "").replace(/[^a-z0-9]+/g, " ").trim();
 
-/** Auto-publish gate. Only genuinely ambiguous items reach a human. */
-const PUBLISH_QUALITY_FLOOR = 55;
-const PUBLISH_CONFIDENCE_FLOOR = 0.6;
 
 async function uniqueSlug(base: string): Promise<string> {
   const root = slugify(base) || `product-${Date.now()}`;
@@ -96,6 +93,15 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   }
 
   // ---- 0. guard rails -------------------------------------------------
+  // Closed allowlist. The paired account sees 19 groups: nine live supplier
+  // channels, their nine near-empty duplicates, and one unrelated group.
+  // Only the nine may create products, so a repost in a duplicate group can
+  // never become a second listing and an unrelated group can never inject one.
+  if (!isAuthoritativeGroup(msg.groupId)) {
+    await log("rejected", { error: "group is not an authoritative supplier source" });
+    return { messageId: msg.messageId, stage: "rejected", reason: "unauthorised group" };
+  }
+
   if (!caption && !msg.imageUrl) {
     await log("rejected", { error: "empty message" });
     return { messageId: msg.messageId, stage: "rejected", reason: "empty message" };
@@ -149,9 +155,10 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         sourceGroupId: msg.groupId,
         sourceGroupName: msg.groupName ?? null,
         defaultCategoryId: cat?.id ?? null,
-        // Auto-registered suppliers stage their first products for review
-        // rather than publishing straight to the storefront.
-        autoPublish: false,
+        // Suppliers publish straight to the storefront. Manual review was a
+        // per-supplier approval step the operator had to clear by hand; the
+        // business requires new stock to be live without that gate.
+        autoPublish: true,
         status: "active",
       })
       .onConflictDoNothing()
@@ -164,7 +171,7 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         severity: "low",
         title: `New supplier group registered: ${name}`,
         detail: cat
-          ? `Category inferred as "${inferred.slug}". Products stage for review until you enable auto-publish.`
+          ? `Category inferred as "${inferred.slug}". Products from this group publish automatically.`
           : "Category could not be inferred from the group name. Assign one from the admin bot or /admin/suppliers.",
         actionUrl: "/admin/suppliers",
       });
@@ -292,20 +299,27 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   const pricing = computePricing({ costPrice: enrichment.costPrice });
 
   // ---- 5. publish decision -------------------------------------------
-  // Two independent gates before anything reaches the storefront:
-  //   1. the operator's manual switch (/upload off)
-  //   2. a live subscription
-  // Either one closed stages the product for review instead of publishing it.
-  // Nothing already published is ever touched, so customers see no difference.
+  // NO HUMAN APPROVAL. A supplier post becomes a live product on its own.
+  //
+  // The quality (>=55) and confidence (>=0.6) floors used to divert anything
+  // below them to `pending_review`, where it sat until an operator cleared it
+  // by hand. Those scores are still computed and stored — they drive supplier
+  // scoring and the ops feed — but they no longer hold stock off the site.
+  //
+  // What remains are not approvals, they are sellability facts: a listing with
+  // no photograph or no price cannot be bought, so publishing it would create
+  // a broken page rather than a sale. The operator kill switch (/upload off)
+  // and the subscription check are deliberate business controls and stay.
   const [manualOn, subscription] = await Promise.all([isAutoUploadEnabled(), uploadsPermitted()]);
   const uploadsOn = manualOn && subscription.permitted;
-  const autoOk =
-    uploadsOn &&
-    mfr.autoPublish &&
-    enrichment.qualityScore >= PUBLISH_QUALITY_FLOOR &&
-    enrichment.confidence >= PUBLISH_CONFIDENCE_FLOOR &&
-    Boolean(msg.imageUrl) &&
-    pricing.price > 0;
+  // Resolve the hero exactly the way the insert below does (line ~338).
+  // The gate previously tested only `msg.imageUrl`, so a payload carrying just
+  // `imageUrls[]` — which the RawMessage type allows and the insert happily
+  // uses — was held back as "no image" even though the product rendered with a
+  // perfectly good photograph.
+  const heroImage = msg.imageUrls?.[0] ?? msg.imageUrl ?? "";
+  const sellable = Boolean(heroImage) && pricing.price > 0;
+  const autoOk = uploadsOn && mfr.autoPublish && sellable;
 
   const status = autoOk ? "published" : "pending_review";
   const slug = await uniqueSlug(`${enrichment.title}-${enrichment.color ?? ""}`);
@@ -336,7 +350,7 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         : msg.imageUrl
           ? [msg.imageUrl]
           : [],
-      heroImage: msg.imageUrls?.[0] ?? msg.imageUrl ?? "",
+      heroImage,
       videoUrl: msg.videoUrl ?? null,
       mediaType: msg.mediaType ?? (msg.videoUrl ? "video" : "image"),
       altText: enrichment.altText,
@@ -415,14 +429,14 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       template: "moderation_needed",
       payload: {
         ...notificationPayload,
-        reason: enrichment.qualityScore < 55 ? "quality below threshold" : "confidence below threshold",
+        reason: !heroImage ? "no image" : pricing.price <= 0 ? "no usable price" : "uploads paused",
       },
     });
     await db.insert(opsTasks).values({
       kind: "moderation",
       severity: enrichment.qualityScore < 35 ? "high" : "medium",
       title: `Review: ${enrichment.title}`,
-      detail: `Quality ${enrichment.qualityScore}/100 · confidence ${(enrichment.confidence * 100).toFixed(0)}%${msg.imageUrl ? "" : " · no image"}. Auto-publish thresholds not met.`,
+      detail: `Quality ${enrichment.qualityScore}/100 · confidence ${(enrichment.confidence * 100).toFixed(0)}%. Held because ${!heroImage ? "the post carried no image" : pricing.price <= 0 ? "no price could be read" : "uploads are paused"} — not because of a review threshold.`,
       entityType: "product",
       entityId: created.id,
       actionUrl: `/admin/moderation`,

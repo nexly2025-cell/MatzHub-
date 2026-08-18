@@ -1,7 +1,7 @@
 import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { automationRuns, categories, manufacturers, opsTasks, products, settings } from "@/db/schema";
-import { detectCategory } from "@/lib/ai";
+import { detectCategory, AUTHORITATIVE_GROUPS, resolveAuthoritativeGroups } from "@/lib/ai";
 import { inr, relativeTime } from "@/lib/utils";
 import { createSubscriptionOrder, SUBSCRIPTION_PRICE_INR, subscriptionStatus } from "@/lib/subscription";
 
@@ -166,7 +166,13 @@ async function listAddableGroups(): Promise<Reply> {
     };
   }
   const body = (live as { body: Record<string, unknown> }).body;
-  const groups = (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string; subject?: string }>;
+  // Collapse the worker's raw discovery onto the closed allowlist. Without
+  // this the selector listed all 19 discovered groups — every supplier name
+  // twice, because a live channel and its 2-member duplicate share a name —
+  // and a stale duplicate was one tap away from becoming an ingestion source.
+  const groups = resolveAuthoritativeGroups(
+    (Array.isArray(body.groups) ? body.groups : []) as Array<{ jid?: string; subject?: string }>,
+  );
 
   // Exclude every registered jid regardless of status. A soft-deleted channel
   // is still "known": offering it here would look like a fresh add but would
@@ -175,11 +181,11 @@ async function listAddableGroups(): Promise<Reply> {
     (await db.select({ jid: manufacturers.sourceGroupId }).from(manufacturers).where(isNotNull(manufacturers.sourceGroupId)))
       .map((r) => r.jid),
   );
-  const addable = groups.filter((g) => g.jid && !known.has(g.jid)).slice(0, 20);
+  const addable = groups.filter((g) => g.jid && !known.has(g.jid));
 
   if (!addable.length) {
     return {
-      text: `➕ *Add a channel*\n\n✅ Every group the worker can see (${groups.length}) is already connected.\n\nNothing left to add.`,
+      text: `➕ *Add a channel*\n\n✅ All ${AUTHORITATIVE_GROUPS.length} supplier groups are connected.\n\nNothing left to add.`,
       keyboard: [[{ text: "📋 All channels", callback_data: "channels" }], [{ text: "◀️ Back", callback_data: "m:ch" }]],
       ephemeral: true,
     };
@@ -188,7 +194,7 @@ async function listAddableGroups(): Promise<Reply> {
   return {
     text: `➕ *Add a channel*\n\n${addable.length} group${addable.length === 1 ? "" : "s"} not yet connected. Tap one to register it.\n\n_Already-connected groups are hidden here._`,
     keyboard: [
-      ...addable.map((g) => [{ text: `➕ ${(g.subject || g.jid!).slice(0, 36)}`, callback_data: `cadd:${shortJid(g.jid!)}` }]),
+      ...addable.map((g) => [{ text: `➕ ${g.name.slice(0, 36)}`, callback_data: `cadd:${shortJid(g.jid!)}` }]),
       [{ text: "◀️ Back", callback_data: "m:ch" }],
     ],
     ephemeral: true,
@@ -286,7 +292,7 @@ async function listCategoriesFor(shortId: string): Promise<Reply> {
 
 /** Configured channels with a live ✅ / ❌ connection indicator. */
 async function listChannels(): Promise<Reply> {
-  const rows = await db
+  const allRows = await db
     .select({
       name: manufacturers.name,
       jid: manufacturers.sourceGroupId,
@@ -298,6 +304,11 @@ async function listChannels(): Promise<Reply> {
     .leftJoin(categories, eq(categories.id, manufacturers.defaultCategoryId))
     .where(isNotNull(manufacturers.sourceGroupId))
     .orderBy(manufacturers.name);
+
+  // One row per authoritative JID, in allowlist order. Historic rows for the
+  // duplicate groups stay in the database (their products remain valid) but
+  // must never appear as controllable channels.
+  const rows = resolveAuthoritativeGroups(allRows);
 
   if (!rows.length) {
     return {

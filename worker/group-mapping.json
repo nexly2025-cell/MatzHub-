@@ -1,8 +1,12 @@
 {
-  "120363099626395319@g.us": "watches",
-  "120363088478963131@g.us": "sunglasses",
-  "120363087780324162@g.us": "bags",
-  "120363047486726341@g.us": "shoes",
-  "120363086022588990@g.us": "perfumes",
-  "120363084957889605@g.us": "clothing"
+  "_comment": "Authoritative supplier groups, keyed by WhatsApp JID. Mirrors AUTHORITATIVE_GROUPS in src/lib/ai.ts — keep both in sync. Each supplier name also exists as a near-empty 2-3 member duplicate group; those JIDs are deliberately absent and are rejected by /api/ingest.",
+  "120363337186642655@g.us": "watches",
+  "120363136590856235@g.us": "clothing",
+  "120363084957889605@g.us": "clothing",
+  "120363086598656877@g.us": "perfumes",
+  "120363169458002169@g.us": "shoes",
+  "120363088334492923@g.us": "bags",
+  "120363089280152472@g.us": "sunglasses",
+  "120363103975055296@g.us": "watches",
+  "120363027163825724@g.us": "shoes"
 }

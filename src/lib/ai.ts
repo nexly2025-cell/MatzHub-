@@ -569,3 +569,73 @@ export function scoreOrderRisk(o: {
   if (o.priorOrders >= 3) score -= 15;
   return { score: Math.max(0, Math.min(100, score)), flags };
 }
+
+/* ==========================================================================
+   AUTHORITATIVE SUPPLIER GROUPS
+   ========================================================================== */
+
+/**
+ * The ONLY WhatsApp groups MatzHub treats as supplier sources.
+ *
+ * The paired account can see 19 groups. Every one of the nine real supplier
+ * groups exists TWICE: once as the live reseller broadcast channel (165-1464
+ * members) and once as a near-empty 2-3 member duplicate. There is also an
+ * unrelated group ("Mfbuddy watch group 13") that is not ours.
+ *
+ * Identity is the JID, never the display name — two groups genuinely share a
+ * name, so name-matching would merge a live channel with a dead duplicate.
+ * The live channel is the authoritative one: real supplier traffic arrives
+ * there (observed from Sunglasses 120363089280152472), and a 2-member group
+ * cannot be a reseller broadcast channel.
+ *
+ * This list is deliberately CLOSED. Newly discovered groups are never added
+ * automatically — adding one is an explicit edit here, reviewed in a PR.
+ * `worker/group-mapping.json` mirrors these JIDs for the worker.
+ */
+export const AUTHORITATIVE_GROUPS: ReadonlyArray<{
+  jid: string;
+  name: string;
+  category: string;
+}> = [
+  { jid: "120363337186642655@g.us", name: "Smart Collections 12@ Premium/Luxury", category: "watches" },
+  { jid: "120363136590856235@g.us", name: "Shetty_Silks_ (Mens Section)", category: "apparel" },
+  { jid: "120363084957889605@g.us", name: "Smart Collections_Clothing", category: "apparel" },
+  { jid: "120363086598656877@g.us", name: "Smart Collections_Perfumes", category: "perfumes" },
+  { jid: "120363169458002169@g.us", name: "SHETTY SILKS SHOES Reseller's Grp", category: "footwear" },
+  { jid: "120363088334492923@g.us", name: "Smart Collections_Premium Bags", category: "handbags" },
+  { jid: "120363089280152472@g.us", name: "Smart Collections_Sunglasses", category: "sunglasses" },
+  { jid: "120363103975055296@g.us", name: "Smart Collections_Watches", category: "watches" },
+  { jid: "120363027163825724@g.us", name: "Smart Collections_Footwear", category: "footwear" },
+];
+
+const AUTHORITATIVE_BY_JID = new Map(AUTHORITATIVE_GROUPS.map((g) => [g.jid, g]));
+
+/** True only for a JID on the closed allowlist above. */
+export function isAuthoritativeGroup(jid: string | null | undefined): boolean {
+  return Boolean(jid && AUTHORITATIVE_BY_JID.has(jid));
+}
+
+export function authoritativeGroup(jid: string | null | undefined) {
+  return jid ? AUTHORITATIVE_BY_JID.get(jid) ?? null : null;
+}
+
+/**
+ * Collapses a discovered group list onto the allowlist.
+ *
+ * Deduplicates by JID (the stable identity), drops everything not on the
+ * allowlist, and returns them in allowlist order so the Telegram selector is
+ * stable between refreshes. Idempotent: running it twice yields the same nine.
+ */
+export function resolveAuthoritativeGroups<T extends { jid?: string | null }>(
+  discovered: ReadonlyArray<T>,
+): Array<T & { name: string; category: string }> {
+  const seen = new Map<string, T>();
+  for (const g of discovered) {
+    if (!g?.jid || !AUTHORITATIVE_BY_JID.has(g.jid)) continue;
+    if (!seen.has(g.jid)) seen.set(g.jid, g);
+  }
+  return AUTHORITATIVE_GROUPS.flatMap((a) => {
+    const hit = seen.get(a.jid);
+    return hit ? [{ ...hit, name: a.name, category: a.category }] : [];
+  });
+}
