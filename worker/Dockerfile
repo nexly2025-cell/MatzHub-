@@ -23,9 +23,10 @@ VOLUME ["/data"]
 
 EXPOSE 8081
 
-# /health is intentionally unauthenticated and returns a group count, never
-# group names, so it is safe for an orchestrator to poll.
+# Docker health is process liveness, not WhatsApp pairing state. `/health`
+# returns 503 while awaiting a legitimate QR scan, but the HTTP server is still
+# healthy and must not be marked unhealthy or rolled back by the orchestrator.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s \
-  CMD wget -qO- http://localhost:8081/health || exit 1
+  CMD node -e "fetch('http://127.0.0.1:8081/health').then(() => process.exit(0)).catch(() => process.exit(1))"
 
 CMD ["node", "whatsapp-worker.mjs"]
