@@ -1,4 +1,5 @@
 import { sanitizeSupplierCaption } from "@/lib/privacy";
+import groupMapping from "../../worker/group-mapping.json";
 
 /**
  * MatzHub AI Enrichment Engine
@@ -592,21 +593,20 @@ export function scoreOrderRisk(o: {
  * automatically — adding one is an explicit edit here, reviewed in a PR.
  * `worker/group-mapping.json` mirrors these JIDs for the worker.
  */
+type SupplierGroupMapping = {
+  names?: Array<{ jid: string; name: string; category: string }>;
+};
+
+/**
+ * Shared source of truth for the fixed nine production supplier JIDs. The
+ * worker consumes the same JSON file directly; this export exists for the
+ * deterministic ingestion and Telegram-routing test contracts.
+ */
 export const AUTHORITATIVE_GROUPS: ReadonlyArray<{
   jid: string;
   name: string;
   category: string;
-}> = [
-  { jid: "120363337186642655@g.us", name: "Smart Collections 12@ Premium/Luxury", category: "watches" },
-  { jid: "120363136590856235@g.us", name: "Shetty_Silks_ (Mens Section)", category: "apparel" },
-  { jid: "120363084957889605@g.us", name: "Smart Collections_Clothing", category: "apparel" },
-  { jid: "120363086598656877@g.us", name: "Smart Collections_Perfumes", category: "perfumes" },
-  { jid: "120363169458002169@g.us", name: "SHETTY SILKS SHOES Reseller's Grp", category: "footwear" },
-  { jid: "120363088334492923@g.us", name: "Smart Collections_Premium Bags", category: "handbags" },
-  { jid: "120363089280152472@g.us", name: "Smart Collections_Sunglasses", category: "sunglasses" },
-  { jid: "120363103975055296@g.us", name: "Smart Collections_Watches", category: "watches" },
-  { jid: "120363027163825724@g.us", name: "Smart Collections_Footwear", category: "footwear" },
-];
+}> = (groupMapping as SupplierGroupMapping).names ?? [];
 
 const AUTHORITATIVE_BY_JID = new Map(AUTHORITATIVE_GROUPS.map((g) => [g.jid, g]));
 

@@ -66,58 +66,54 @@ describe("no payment flow is ever implied", () => {
     }
   });
 
-  it("routes checkout to WhatsApp, not to a gateway", async () => {
+  it("routes cart through delivery details and the WhatsApp handoff, not a gateway", async () => {
     const cart = await readFile("src/app/cart/page.tsx", "utf8");
-    // The order is recorded first, then handed to WhatsApp with its number.
-    expect(cart).toContain('fetch("/api/orders"');
-    expect(cart).toContain("waLink(message)");
-    expect(cart).toContain("buildOrderMessage(cart)");
-    // A single authoritative order message — the cart must not build its own.
+    const checkout = await readFile("src/app/checkout/page.tsx", "utf8");
+    // Cart stays focused on lines and totals; checkout records the request.
+    expect(cart).toContain('href="/checkout"');
+    expect(checkout).toContain('fetch("/api/orders"');
+    expect(checkout).toContain("waLink(buildOrderMessage(cart))");
     expect(cart).not.toContain("buildWhatsAppMessage");
-    // A single authoritative totals helper — no inline arithmetic.
     expect(cart).toContain("cartTotals(cart)");
   });
 });
 
 describe("order submission is server-authoritative", () => {
   it("never trusts a client-supplied price", async () => {
-    const route = await readFile("src/app/api/orders/route.ts", "utf8");
-    // The client sends ids and quantities only. Anything price-shaped read off
-    // the request body would let a tampered cart set its own total.
-    expect(route).not.toMatch(/body\.(items\[\d*\]\.)?price/);
-    expect(route).toContain("price: products.price");
-    expect(route).toContain("unitPrice: p.price");
+    const service = await readFile("src/lib/orders.ts", "utf8");
+    // The browser submits ids, quantities, and delivery details only. Live
+    // product rows remain the source of every amount written to an order.
+    expect(service).toContain("price: products.price");
+    expect(service).toContain("unitPrice: line.product.price");
+    expect(service).not.toMatch(/raw\.items.*price/);
   });
 
   it("records the order as unpaid", async () => {
-    const route = await readFile("src/app/api/orders/route.ts", "utf8");
-    expect(route).toContain('paymentStatus: "pending"');
-    expect(route).not.toMatch(/paymentStatus:\s*"paid"/);
-    expect(route).toContain('status: "placed"');
+    const service = await readFile("src/lib/orders.ts", "utf8");
+    expect(service).toContain('paymentStatus: "pending"');
+    expect(service).not.toMatch(/paymentStatus:\s*"paid"/);
+    expect(service).toContain('status: "placed"');
   });
 
   it("writes the order and its items in one transaction", async () => {
-    const route = await readFile("src/app/api/orders/route.ts", "utf8");
-    expect(route).toContain("db.transaction");
-    expect(route).toContain("insert(orderItems)");
+    const service = await readFile("src/lib/orders.ts", "utf8");
+    expect(service).toContain("db.transaction");
+    expect(service).toContain("insert(orderItems)");
   });
 });
 
 describe("an order cannot be duplicated", () => {
-  it("derives an idempotency key and enforces it uniquely", async () => {
-    const route = await readFile("src/app/api/orders/route.ts", "utf8");
-    // Key must cover who is buying, what, and how many — not just the phone.
-    expect(route).toContain("idempotencyKey");
-    expect(route).toContain("createHash(\"sha256\")");
-    expect(route).toMatch(/wanted\.map\(\(i\) => `\$\{i\.productId\}:\$\{i\.qty\}/);
-    // A targeted conflict clause would throw on an idempotency collision
-    // instead of swallowing it, aborting the transaction.
-    expect(route).not.toContain("onConflictDoNothing({ target: orders.orderNo })");
-    expect(route).toContain("onConflictDoNothing()");
+  it("uses a browser submission key and server-side unique recovery", async () => {
+    const checkout = await readFile("src/app/checkout/page.tsx", "utf8");
+    const service = await readFile("src/lib/orders.ts", "utf8");
+    expect(checkout).toContain("submissionKey: orderRequestKey(cart)");
+    expect(service).toContain("where(eq(orders.submissionKey, raw.submissionKey))");
+    expect(service).toContain("uniqueViolation(error)");
+    expect(service).toContain("ORDER_DUPLICATE");
   });
 
-  it("declares the unique index that makes the race safe", async () => {
+  it("declares the unique submission key index that settles concurrent requests", async () => {
     const schema = await readFile("src/db/schema.ts", "utf8");
-    expect(schema).toContain('uniqueIndex("orders_idempotency_uidx")');
+    expect(schema).toContain('uniqueIndex("orders_submission_key_uidx")');
   });
 });

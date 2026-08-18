@@ -12,7 +12,7 @@ import {
   productVariants,
   products,
 } from "@/db/schema";
-import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory, isAuthoritativeGroup } from "@/lib/ai";
+import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory } from "@/lib/ai";
 import { isAutoUploadEnabled } from "@/lib/telegram";
 import { uploadsPermitted } from "@/lib/subscription";
 import { classifyMessage, applyResolution } from "@/lib/reconcile";
@@ -91,12 +91,11 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   };
 
   // ---- 0. guard rails -------------------------------------------------
-  // Closed allowlist. The paired account sees 19 groups: nine live supplier
-  // channels, their nine near-empty duplicates, and one unrelated group.
-  // Only the nine may create products, so a repost in a duplicate group can
-  // never become a second listing and an unrelated group can never inject one.
-  if (!isAuthoritativeGroup(msg.groupId)) {
-    await log("rejected", { error: "group is not an authoritative supplier source" });
+  // Closed JID allowlist: the paired account sees live supplier channels,
+  // duplicate-name twins, and unrelated groups. Only the nine fixed JIDs may
+  // create products or acknowledge fulfilment.
+  if (!isApprovedSupplierGroup(msg.groupId)) {
+    await log("rejected", { error: "group_not_authoritative" });
     return { messageId: msg.messageId, stage: "rejected", reason: "unauthorised group" };
   }
 
@@ -105,8 +104,8 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     return { messageId: msg.messageId, stage: "rejected", reason: "empty message" };
   }
 
-  const canonicalGroupName = canonicalSupplierGroupName(msg.groupName);
-  if (!msg.groupId || !canonicalGroupName || !isApprovedSupplierGroup(msg.groupId, msg.groupName)) {
+  const canonicalGroupName = canonicalSupplierGroupName(msg.groupId);
+  if (!msg.groupId || !canonicalGroupName || !isApprovedSupplierGroup(msg.groupId)) {
     await log("rejected", { error: "group_not_authoritative" });
     return { messageId: msg.messageId, stage: "rejected", reason: "group not authoritative" };
   }
@@ -315,7 +314,8 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   // The incident pause and subscription gates remain hard operational stops.
   const [manualOn, subscription] = await Promise.all([isAutoUploadEnabled(), uploadsPermitted()]);
   const uploadsOn = manualOn && subscription.permitted;
-  const autoOk = uploadsOn && mfr.autoPublish && Boolean(msg.imageUrl) && pricing.price > 0;
+  const heroImage = msg.imageUrls?.[0] ?? msg.imageUrl ?? "";
+  const autoOk = uploadsOn && mfr.autoPublish && Boolean(heroImage) && pricing.price > 0;
 
   const status = autoOk ? "published" : "pending_review";
   const slug = await uniqueSlug(`${enrichment.title}-${enrichment.color ?? ""}`);

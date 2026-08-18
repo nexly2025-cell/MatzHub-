@@ -133,7 +133,7 @@ export async function uploadCreds(log) {
       } else {
         log("session_backup_file_failed", { file: relativePath, status: res.status });
       }
-    }
+    });
     if (uploaded) log("SESSION_BACKUP", { files: uploaded, bytes });
   } catch (e) {
     log("SESSION_BACKUP_FAILED", { error: e.message });
@@ -193,19 +193,15 @@ export async function restoreCreds(log) {
       await fsp.mkdir(path.dirname(filePath), { recursive: true });
       await fsp.writeFile(filePath, body);
       bytes += body.length;
-    }
-    if (restored) {
-      log("SESSION_RESTORED", { files: restored, bytes });
       return true;
     });
-
     const restored = written.filter(Boolean).length;
 
     // Without creds.json the remaining key material is useless. Discard the
     // staging copy rather than promote a session that cannot authenticate.
     if (!restored || !fs.existsSync(path.join(stagingDir, "creds.json"))) {
       await fsp.rm(stagingDir, { recursive: true, force: true });
-      log("session_restore_incomplete", { files: restored, expected: items.length });
+      log("SESSION_RESTORE_INCOMPLETE", { files: restored, expected: items.length });
       return false;
     }
 
@@ -215,7 +211,7 @@ export async function restoreCreds(log) {
     }
     await fsp.rm(stagingDir, { recursive: true, force: true });
 
-    log("session_restored", { files: restored, bytes });
+    log("SESSION_RESTORED", { files: restored, bytes });
     return true;
   } catch (e) {
     log("SESSION_RESTORE_FAILED", { error: e.message });

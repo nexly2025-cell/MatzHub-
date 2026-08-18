@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  approvedSupplierGroups,
   approvedSupplierGroupNames,
   categoryForApprovedSupplierGroup,
   isApprovedSupplierGroup,
@@ -7,62 +8,53 @@ import {
 } from "@/lib/supplier-groups";
 
 describe("verified supplier group registry", () => {
-  it("contains exactly nine unique configured supplier names", () => {
+  it("contains exactly nine unique JID-canonical supplier groups", () => {
     expect(approvedSupplierGroupNames).toHaveLength(9);
     expect(new Set(approvedSupplierGroupNames)).toHaveLength(9);
+    expect(new Set(approvedSupplierGroups.map((group) => group.jid))).toHaveLength(9);
   });
 
-  it("accepts every supplied real group name after harmless formatting changes", () => {
-    for (const name of [
-      "Smart Collections 12@ Premium/Luxury",
-      "Shetty_Silks_ (Mens Section)",
-      "Smart Collections_Clothing",
-      "Smart Collections_Perfumes",
-      "SHETTY SILKS SHOES Reseller's Grp",
-      "Smart Collections_Premium Bags",
-      "Smart Collections_Sunglasses",
-      "Smart Collections_Watches",
-      "Smart Collections_Footwear",
-    ]) {
-      expect(isApprovedSupplierGroup("", `  ${name.toUpperCase()}  `), name).toBe(true);
+  it("accepts exactly the verified JIDs and maps their categories", () => {
+    for (const group of approvedSupplierGroups) {
+      expect(isApprovedSupplierGroup(group.jid), group.name).toBe(true);
+      expect(categoryForApprovedSupplierGroup(group.jid), group.name).toBe(group.category);
     }
   });
 
-  it("assigns the deterministic category for dedicated real groups", () => {
-    expect(categoryForApprovedSupplierGroup("", "Shetty_Silks_ (Mens Section)")).toBe("apparel");
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections_Clothing")).toBe("apparel");
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections_Perfumes")).toBe("perfumes");
-    expect(categoryForApprovedSupplierGroup("", "SHETTY SILKS SHOES Reseller's Grp")).toBe("footwear");
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections_Premium Bags")).toBe("handbags");
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections_Sunglasses")).toBe("sunglasses");
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections_Watches")).toBe("watches");
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections_Footwear")).toBe("footwear");
-  });
-
-  it("lets the premium/luxury group classify from its real product caption", () => {
-    expect(categoryForApprovedSupplierGroup("", "Smart Collections 12@ Premium/Luxury")).toBeNull();
-  });
-
-  it("rejects an unapproved group", () => {
-    expect(isApprovedSupplierGroup("120000000000000000@g.us", "Unrelated Wholesale Group")).toBe(false);
+  it("rejects duplicate-name twins and unrelated groups by JID", () => {
+    // Observed near-empty duplicate of the live Sunglasses group.
+    expect(isApprovedSupplierGroup("120363088478963131@g.us", "Smart Collections_Sunglasses")).toBe(false);
+    expect(isApprovedSupplierGroup("120363420070237908@g.us", "Mfbuddy watch group 13")).toBe(false);
   });
 
   it("deduplicates repeated delivery of the same canonical JID", () => {
+    const live = approvedSupplierGroups.find((group) => group.name === "Smart Collections_Watches")!;
     const selected = selectAuthoritativeLiveGroups([
-      { jid: "120000000000000001@g.us", subject: "Smart Collections_Watches" },
-      { jid: "120000000000000001@g.us", subject: "Smart Collections_Watches" },
+      { jid: live.jid, subject: live.name },
+      { jid: live.jid, subject: live.name },
     ]);
     expect(selected.groups).toHaveLength(1);
-    expect(selected.groups[0].canonicalName).toBe("Smart Collections_Watches");
+    expect(selected.groups[0].jid).toBe(live.jid);
     expect(selected.ambiguousNames).toEqual([]);
   });
 
-  it("withholds same-name different-JID aliases until explicitly pinned", () => {
+  it("drops same-name non-authoritative JID aliases rather than merging them", () => {
+    const live = approvedSupplierGroups.find((group) => group.name === "Smart Collections_Watches")!;
     const selected = selectAuthoritativeLiveGroups([
-      { jid: "120000000000000001@g.us", subject: "Smart Collections_Watches" },
-      { jid: "120000000000000002@g.us", subject: "Smart Collections_Watches" },
+      { jid: live.jid, subject: live.name },
+      { jid: "120363088478963131@g.us", subject: live.name },
     ]);
-    expect(selected.groups).toHaveLength(0);
-    expect(selected.ambiguousNames).toEqual(["Smart Collections_Watches"]);
+    expect(selected.groups).toHaveLength(1);
+    expect(selected.groups[0].jid).toBe(live.jid);
+    expect(selected.ambiguousNames).toEqual([]);
+  });
+
+  it("returns groups in fixed configured order and never auto-admits a new JID", () => {
+    const discovered = [
+      { jid: "120363420070237908@g.us", subject: "Mfbuddy watch group 13" },
+      ...[...approvedSupplierGroups].reverse().map((group) => ({ jid: group.jid, subject: group.name })),
+    ];
+    const selected = selectAuthoritativeLiveGroups(discovered);
+    expect(selected.groups.map((group) => group.jid)).toEqual(approvedSupplierGroups.map((group) => group.jid));
   });
 });

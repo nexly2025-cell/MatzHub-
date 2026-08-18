@@ -1,7 +1,7 @@
 import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { automationRuns, categories, manufacturers, opsTasks, products, settings } from "@/db/schema";
-import { detectCategory, AUTHORITATIVE_GROUPS, resolveAuthoritativeGroups } from "@/lib/ai";
+import { detectCategory } from "@/lib/ai";
 import { inr, relativeTime } from "@/lib/utils";
 import { createSubscriptionOrder, SUBSCRIPTION_PRICE_INR, subscriptionStatus } from "@/lib/subscription";
 import {
@@ -187,7 +187,7 @@ type ChannelRow = {
 function distinctAuthoritativeChannels<T extends ChannelRow>(rows: T[]) {
   const byJid = new Map<string, T>();
   for (const row of rows) {
-    const canonical = row.canonicalGroupName ?? canonicalSupplierGroupName(row.name);
+    const canonical = canonicalSupplierGroupName(row.jid);
     if (!row.jid || !canonical || byJid.has(row.jid)) continue;
     byJid.set(row.jid, { ...row, canonicalGroupName: canonical });
   }

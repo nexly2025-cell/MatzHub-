@@ -1,7 +1,7 @@
 import "server-only";
 import groupMapping from "../../worker/group-mapping.json";
 
-export type ApprovedSupplierGroup = { name: string; category: string | null; jid?: string };
+export type ApprovedSupplierGroup = { jid: string; name: string; category: string };
 export type LiveWhatsAppGroup = { jid?: string; subject?: string };
 
 type GroupMapping = {
@@ -10,11 +10,12 @@ type GroupMapping = {
 };
 
 const mapping = groupMapping as GroupMapping;
-const NAME_ENTRIES = (mapping.names ?? []).map((group) => ({
+const GROUPS = (mapping.names ?? []).map((group) => ({
   ...group,
   canonicalName: normaliseGroupName(group.name),
 }));
-const NAME_GROUP = new Map(NAME_ENTRIES.map((group) => [group.canonicalName, group]));
+const GROUP_BY_JID = new Map(GROUPS.map((group) => [group.jid, group]));
+const GROUP_BY_NAME = new Map(GROUPS.map((group) => [group.canonicalName, group]));
 
 export function normaliseGroupName(value: string | null | undefined) {
   return (value ?? "")
@@ -26,15 +27,15 @@ export function normaliseGroupName(value: string | null | undefined) {
 }
 
 export function canonicalSupplierGroupName(value: string | null | undefined) {
-  return NAME_GROUP.get(normaliseGroupName(value))?.name ?? null;
+  return GROUP_BY_JID.get(value ?? "")?.name ?? GROUP_BY_NAME.get(normaliseGroupName(value))?.name ?? null;
 }
 
 export function configuredSupplierGroup(value: string | null | undefined) {
-  return NAME_GROUP.get(normaliseGroupName(value)) ?? null;
+  return GROUP_BY_JID.get(value ?? "") ?? GROUP_BY_NAME.get(normaliseGroupName(value)) ?? null;
 }
 
-/** Exactly the nine human-approved supplier sources, in configured order. */
-export const approvedSupplierGroups = NAME_ENTRIES.map(({ name, category, canonicalName }) => ({ name, category, canonicalName }));
+/** Exactly nine JID-canonical, human-approved supplier sources. */
+export const approvedSupplierGroups = GROUPS.map(({ jid, name, category, canonicalName }) => ({ jid, name, category, canonicalName }));
 export const approvedSupplierGroupNames = approvedSupplierGroups.map((group) => group.name);
 
 function configuredJids() {
@@ -44,59 +45,33 @@ function configuredJids() {
     .filter(Boolean);
 }
 
-/**
- * A configured JID allow-list is the strongest boundary after the worker has
- * reported the real JIDs. Before that, exact approved names are the bootstrap
- * boundary. Bare historical JIDs without a configured canonical name are never
- * enough to authorize an unknown display name.
- */
-export function isApprovedSupplierGroup(groupId?: string | null, groupName?: string | null) {
-  const jids = configuredJids();
-  if (jids.length) return Boolean(groupId && jids.includes(groupId));
-  return Boolean(canonicalSupplierGroupName(groupName));
+/** A source is accepted only if its stable JID is one of the nine approved JIDs. */
+export function isApprovedSupplierGroup(groupId?: string | null, _groupName?: string | null) {
+  if (!groupId || !GROUP_BY_JID.has(groupId)) return false;
+  const override = configuredJids();
+  return !override.length || override.includes(groupId);
 }
 
-export function categoryForApprovedSupplierGroup(groupId?: string | null, groupName?: string | null) {
-  if (!isApprovedSupplierGroup(groupId, groupName)) return null;
-  return configuredSupplierGroup(groupName)?.category ?? null;
+export function categoryForApprovedSupplierGroup(groupId?: string | null, _groupName?: string | null) {
+  if (!isApprovedSupplierGroup(groupId)) return null;
+  return GROUP_BY_JID.get(groupId ?? "")?.category ?? null;
 }
 
 /**
- * Strict Telegram selector input. A JID is canonical: exact duplicate JIDs
- * collapse to one row. Two JIDs carrying the same approved display name are
- * deliberately withheld as ambiguous until WA_GROUP_IDS pins the intended JID;
- * this prevents accidental alias merging or ingesting a copied group.
+ * Closed Telegram selector input: one row per known JID in configured order.
+ * Unknown JIDs and duplicate-name twins are rejected before any UI is built.
  */
 export function selectAuthoritativeLiveGroups(groups: LiveWhatsAppGroup[]) {
-  const byJid = new Map<string, { jid: string; subject: string; canonicalName: string }>();
+  const discovered = new Map<string, LiveWhatsAppGroup>();
   for (const group of groups) {
     const jid = group.jid?.trim();
-    const subject = group.subject?.trim() ?? "";
-    const canonicalName = canonicalSupplierGroupName(subject);
-    if (!jid || !canonicalName || byJid.has(jid)) continue;
-    byJid.set(jid, { jid, subject, canonicalName });
+    if (jid && GROUP_BY_JID.has(jid) && !discovered.has(jid)) discovered.set(jid, group);
   }
-
-  const byName = new Map<string, Array<{ jid: string; subject: string; canonicalName: string }>>();
-  for (const group of byJid.values()) {
-    byName.set(group.canonicalName, [...(byName.get(group.canonicalName) ?? []), group]);
-  }
-
-  const allowedJids = new Set(configuredJids());
-  const groupsForSelector: Array<{ jid: string; subject: string; canonicalName: string }> = [];
-  const ambiguousNames: string[] = [];
-  for (const configured of approvedSupplierGroups) {
-    const candidates = byName.get(configured.name) ?? [];
-    if (candidates.length === 1) {
-      groupsForSelector.push(candidates[0]);
-      continue;
-    }
-    if (candidates.length > 1) {
-      const pinned = candidates.filter((candidate) => allowedJids.has(candidate.jid));
-      if (pinned.length === 1) groupsForSelector.push(pinned[0]);
-      else ambiguousNames.push(configured.name);
-    }
-  }
-
-  return { groups: groupsForSelector, ambiguousNames };
+  return {
+    groups: approvedSupplierGroups.flatMap((configured) => {
+      const live = discovered.get(configured.jid);
+      return live ? [{ jid: configured.jid, subject: live.subject?.trim() || configured.name, canonicalName: configured.name }] : [];
+    }),
+    ambiguousNames: [],
+  };
 }

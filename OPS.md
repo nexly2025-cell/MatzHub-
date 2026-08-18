@@ -204,7 +204,7 @@ WhatsApp group  →  worker (Baileys)  →  POST /api/ingest  →  ingestBatch()
 - Authenticated with `INGEST_TOKEN`. Fails-closed: unset token → 401 in
   production.
 - Idempotent by `messageId`.
-- Enforces the verified exact group-name registry; `WA_GROUP_IDS` becomes the stronger exact-JID allow-list once populated from Telegram /channels.
+- Enforces the verified exact nine-JID registry. `WA_GROUP_IDS` must contain the same nine JIDs on the worker and Vercel; new groups are never admitted automatically.
 - Returns 503 in maintenance mode (worker retries later; nothing is lost).
 
 ---

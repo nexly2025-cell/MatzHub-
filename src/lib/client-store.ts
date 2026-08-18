@@ -1,7 +1,15 @@
 "use client";
 
 
-import { FREE_DELIVERY_OVER, DELIVERY_FEE, MAX_QTY_PER_LINE } from "@/lib/utils";
+import {
+  FREE_DELIVERY_OVER as FREE_DELIVERY_THRESHOLD,
+  DELIVERY_FEE as STANDARD_DELIVERY_FEE,
+  MAX_QTY_PER_LINE as CART_LINE_LIMIT,
+} from "@/lib/utils";
+
+export const FREE_DELIVERY_OVER = FREE_DELIVERY_THRESHOLD;
+export const DELIVERY_FEE = STANDARD_DELIVERY_FEE;
+export const MAX_QTY_PER_LINE = CART_LINE_LIMIT;
 
 const WISH_KEY = "mh_wish_v1";
 const RECENT_KEY = "mh_recent_v1";
@@ -86,7 +94,7 @@ export function cartTotals(cart: CartItem[]) {
   const subtotal = cart.reduce((sum, item) => sum + item.price * item.qty, 0);
   const mrpTotal = cart.reduce((sum, item) => sum + item.mrp * item.qty, 0);
   const savings = mrpTotal - subtotal;
-  const delivery = subtotal === 0 || subtotal >= 999 ? 0 : 59;
+  const delivery = subtotal === 0 || subtotal >= FREE_DELIVERY_OVER ? 0 : DELIVERY_FEE;
 
   return { subtotal, mrpTotal, savings, delivery, total: subtotal + delivery };
 }
@@ -111,12 +119,12 @@ export const getCart = () => read<CartItem[]>(CART_KEY, []);
 
 export function addToCart(item: CartItem) {
   const cart = getCart();
-  const qty = Math.max(1, Math.min(10, item.qty));
+  const qty = Math.max(1, Math.min(MAX_QTY_PER_LINE, item.qty));
   const existing = cart.find(
     (i) => i.id === item.id && i.variant === item.variant
   );
   if (existing) {
-    existing.qty = Math.min(10, existing.qty + qty);
+    existing.qty = Math.min(MAX_QTY_PER_LINE, existing.qty + qty);
   } else {
     cart.push({ ...item, qty });
   }
@@ -129,7 +137,7 @@ export function updateCartQty(id: string, variant: string | undefined, qty: numb
     cart = cart.filter((i) => !(i.id === id && i.variant === variant));
   } else {
     const item = cart.find((i) => i.id === id && i.variant === variant);
-    if (item) item.qty = Math.min(10, Math.floor(qty));
+    if (item) item.qty = Math.min(MAX_QTY_PER_LINE, Math.floor(qty));
   }
   write(CART_KEY, cart);
 }

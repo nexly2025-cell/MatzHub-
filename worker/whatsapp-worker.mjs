@@ -153,17 +153,15 @@ function getMappedCategory(jid, groupName) {
  * allow-list refuses all group ingestion in production rather than publishing
  * from every group the linked account happens to join.
  */
-function isAllowedGroup(jid, groupName = "") {
-  if (CONFIG.groupIds.length) return CONFIG.groupIds.includes(jid);
-  if (Object.prototype.hasOwnProperty.call(GROUP_NAME_MAP, normaliseGroupName(groupName))) return true;
-  // Optional development-only narrowing for temporary operational testing.
-  if (CONFIG.groups.length) return CONFIG.groups.some((group) => groupName.toLowerCase().includes(group.toLowerCase()));
-  return process.env.NODE_ENV !== "production";
+function isAllowedGroup(jid, _groupName = "") {
+  // A configured override may narrow the existing closed list, never expand it.
+  if (!Object.prototype.hasOwnProperty.call(GROUP_MAP, jid)) return false;
+  return !CONFIG.groupIds.length || CONFIG.groupIds.includes(jid);
 }
 
 function watchedGroupCount() {
   if (CONFIG.groupIds.length) return CONFIG.groupIds.length;
-  return Object.keys(GROUP_NAME_MAP).length;
+  return Object.keys(GROUP_MAP).length;
 }
 
 /* ------------------------------------------------------------------ */

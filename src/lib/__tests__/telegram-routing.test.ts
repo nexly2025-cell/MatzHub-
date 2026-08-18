@@ -152,8 +152,8 @@ describe("authoritative supplier groups", () => {
   it("keeps the worker mapping in sync with the app allowlist", async () => {
     const { AUTHORITATIVE_GROUPS } = await import("@/lib/ai");
     const { readFile } = await import("node:fs/promises");
-    const map = JSON.parse(await readFile("worker/group-mapping.json", "utf8")) as Record<string, string>;
-    const jids = Object.keys(map).filter((k) => k.endsWith("@g.us"));
+    const map = JSON.parse(await readFile("worker/group-mapping.json", "utf8")) as { jids?: Record<string, string> };
+    const jids = Object.keys(map.jids ?? {});
     expect(jids.sort()).toEqual(AUTHORITATIVE_GROUPS.map((g) => g.jid).sort());
   });
 });
