@@ -66,13 +66,30 @@ const GROUP_MAP_PATH = path.join(__dirname, "group-mapping.json");
 let GROUP_MAP = {};
 try {
   if (fs.existsSync(GROUP_MAP_PATH)) {
-    GROUP_MAP = JSON.parse(fs.readFileSync(GROUP_MAP_PATH, "utf8"));
+    const raw = JSON.parse(fs.readFileSync(GROUP_MAP_PATH, "utf8"));
+    // Keys starting "_" are documentation, not groups.
+    GROUP_MAP = Object.fromEntries(Object.entries(raw).filter(([k]) => k.endsWith("@g.us")));
     log("group_map_loaded", { count: Object.keys(GROUP_MAP).length });
   }
 } catch (e) {
   log("group_map_error", { error: e.message });
   GROUP_MAP = {};
 }
+
+/**
+ * Closed allowlist of supplier groups, taken from group-mapping.json.
+ *
+ * The paired account can see 19 groups: nine live supplier channels, nine
+ * near-empty duplicates that share their names, and one unrelated group.
+ * Filtering here means a repost in a duplicate never reaches /api/ingest.
+ * The API re-checks independently, so this is bandwidth saving, not the
+ * security boundary.
+ *
+ * Newly discovered groups are NEVER auto-added — editing the JSON is the
+ * only way in.
+ */
+const AUTHORITATIVE_JIDS = new Set(Object.keys(GROUP_MAP));
+const isAuthoritativeGroup = (jid) => AUTHORITATIVE_JIDS.has(jid);
 
 function getMappedCategory(jid, groupName) {
   if (!jid) return null;
@@ -125,7 +142,9 @@ async function hostImage(buffer, contentType, ext) {
     const name = `products/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
     const res = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${name}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${supabaseKey}`, "Content-Type": contentType, "x-upsert": "true" },
+      // `apikey` is required in addition to the bearer token for sb_secret_*
+      // keys; without it Storage returns 400 and NO product image ever uploads.
+      headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, "Content-Type": contentType, "x-upsert": "true" },
       body: buffer,
     });
     if (!res.ok) throw new Error(`storage upload failed ${res.status} ${await res.text()}`);
@@ -147,7 +166,7 @@ async function hostVideo(buffer) {
     const name = `videos/${Date.now()}-${Math.random().toString(36).slice(2, 8)}.mp4`;
     const res = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${name}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${supabaseKey}`, "Content-Type": "video/mp4", "x-upsert": "true" },
+      headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, "Content-Type": "video/mp4", "x-upsert": "true" },
       body: buffer,
     });
     if (!res.ok) throw new Error(`video upload failed ${res.status}: ${await res.text()}`);
@@ -483,6 +502,22 @@ async function start() {
         const jid = m.key.remoteJid || "";
         if (!jid.endsWith("@g.us")) continue; // groups only
         if (m.key.fromMe) continue;
+
+        // A message that arrived but could not be decrypted has no content to
+        // read. Baileys has already sent a retry receipt asking the sender to
+        // redistribute the sender key; the message returns on its own once it
+        // does. Log it accurately and move on — never count it as processed,
+        // and never let it stop the loop.
+        if (!m.message) {
+          log("message_decrypt_failed", { jid, messageId: m.key.id, note: "retry receipt sent; awaiting sender key" });
+          continue;
+        }
+
+        if (!isAuthoritativeGroup(jid)) {
+          log("group_rejected", { jid, reason: "not an authoritative supplier group" });
+          continue;
+        }
+        log("message_received", { jid, messageId: m.key.id });
 
         // Resolve the human-readable group name for supplier mapping.
         let groupName = "";

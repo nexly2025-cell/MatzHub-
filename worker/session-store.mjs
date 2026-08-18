@@ -19,8 +19,52 @@ function enabled() {
   return Boolean(SUPABASE_URL && SUPABASE_KEY);
 }
 
+/**
+ * Supabase Storage auth headers.
+ *
+ * `Authorization: Bearer <key>` ALONE IS NOT ENOUGH. Supabase's newer API key
+ * format (`sb_secret_…`) is rejected with HTTP 400 unless the `apikey` header
+ * is sent as well. Every call in this file previously omitted it, so
+ * uploadCreds() silently 400'd on every file and restoreCreds() got a 400 on
+ * the list and returned false.
+ *
+ * Net effect: the WhatsApp session was NEVER persisted to Supabase, which is
+ * precisely why a fresh QR scan was demanded after every redeploy. Verified
+ * against the live project: without apikey → 400, with apikey → 200.
+ */
+function authHeaders(extra = {}) {
+  return {
+    apikey: SUPABASE_KEY,
+    Authorization: `Bearer ${SUPABASE_KEY}`,
+    ...extra,
+  };
+}
+
 function encodeObjectPath(parts) {
   return ["storage", "v1", "object", BUCKET, ...parts.map(encodeURIComponent)].join("/");
+}
+
+/**
+ * Bounded-concurrency map.
+ *
+ * A live Baileys session is ~150 small files (pre-keys dominate). Doing them
+ * one request at a time took ~4 minutes against Supabase from a cold start,
+ * during which /health reports "starting" — long enough for Docker's
+ * healthcheck and deploy-worker.sh to declare the worker dead and roll back.
+ * Eight in flight keeps an e2-micro's CPU and socket count comfortable while
+ * cutting that to a few seconds.
+ */
+async function mapLimit(items, limit, fn) {
+  const results = [];
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length) {
+      const index = cursor++;
+      results[index] = await fn(items[index]);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 async function walkDir(root) {
@@ -60,17 +104,27 @@ export async function uploadCreds(log) {
 
     let uploaded = 0;
     let bytes = 0;
-    for (const file of files) {
+    await mapLimit(files, 8, async (file) => {
       const relativePath = path.relative(sessionDir, file).replace(/\\/g, "/");
       const destPath = `${PREFIX}/${relativePath}`;
-      const body = fs.readFileSync(file);
+      // Baileys consumes pre-keys while we are uploading, so a file listed a
+      // moment ago can be gone by the time we read it. That is normal, not an
+      // error — but an uncaught ENOENT here aborted the WHOLE backup, leaving
+      // the Supabase copy progressively staler until a redeploy demanded a new
+      // QR. Skip the vanished file and keep going.
+      let body;
+      try {
+        body = fs.readFileSync(file);
+      } catch (err) {
+        if (err?.code !== "ENOENT") log("session_backup_file_failed", { file: relativePath, error: err?.code || String(err) });
+        return;
+      }
       const res = await fetch(`${SUPABASE_URL}/${encodeObjectPath([destPath])}`, {
         method: "POST",
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
+        headers: authHeaders({
           "Content-Type": contentTypeForFile(file),
           "x-upsert": "true",
-        },
+        }),
         body,
       });
       if (res.ok) {
@@ -79,7 +133,7 @@ export async function uploadCreds(log) {
       } else {
         log("session_backup_file_failed", { file: relativePath, status: res.status });
       }
-    }
+    });
     if (uploaded) log("session_backed_up", { files: uploaded, bytes });
   } catch (e) {
     log("session_backup_failed", { error: e.message });
@@ -88,20 +142,23 @@ export async function uploadCreds(log) {
 
 export async function restoreCreds(log) {
   if (!enabled()) return false;
+  const fsp = await import("node:fs/promises");
+  const fs = await import("node:fs");
+  const path = await import("node:path");
+  const sessionDir = process.env.WA_SESSION_DIR || ".wa-session";
+  const stagingDir = `${sessionDir}.restoring`;
+
   try {
-    const fs = await import("node:fs");
-    const fsp = await import("node:fs/promises");
-    const path = await import("node:path");
-    const sessionDir = process.env.WA_SESSION_DIR || ".wa-session";
-    if (fs.existsSync(sessionDir) && (await fsp.readdir(sessionDir)).length) return true;
+    // creds.json is the only file that proves a usable session. Testing for
+    // "directory is non-empty" treated a half-finished restore — or a stray
+    // whatsapp-qr.png — as a complete one, so the worker booted on a partial
+    // key set, failed to decrypt, and demanded a fresh pairing.
+    if (fs.existsSync(path.join(sessionDir, "creds.json"))) return true;
 
     // Supabase Storage list is a POST with a JSON body. A GET returns 404.
     const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
       method: "POST",
-      headers: {
-        Authorization: `Bearer ${SUPABASE_KEY}`,
-        "Content-Type": "application/json",
-      },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ prefix: `${PREFIX}/`, limit: 1000 }),
     });
     if (!listRes.ok) {
@@ -112,33 +169,53 @@ export async function restoreCreds(log) {
     const items = Array.isArray(list) ? list : list?.data || [];
     if (!items.length) return false;
 
-    await fsp.mkdir(sessionDir, { recursive: true });
-    let restored = 0;
+    // Download into staging, then promote. A crash mid-restore leaves the real
+    // session directory untouched instead of half-written.
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+    await fsp.mkdir(stagingDir, { recursive: true });
+
     let bytes = 0;
-    for (const item of items) {
-      // Supabase returns names relative to the prefix argument, so we prepend PREFIX.
+    const written = await mapLimit(items, 8, async (item) => {
+      // Supabase returns names relative to the prefix argument, so prepend it.
       const objectName = item.name || item.path || item.id;
-      if (!objectName) continue;
+      if (!objectName) return false;
       const objectPath = objectName.startsWith(`${PREFIX}/`) ? objectName : `${PREFIX}/${objectName}`;
       const relativePath = objectPath.slice(PREFIX.length + 1);
-      if (!relativePath) continue;
-      const filePath = path.join(sessionDir, relativePath);
-      await fsp.mkdir(path.dirname(filePath), { recursive: true });
+      // Reject anything that would escape the session directory.
+      if (!relativePath || relativePath.includes("..")) return false;
+      const filePath = path.join(stagingDir, relativePath);
+      if (!path.resolve(filePath).startsWith(path.resolve(stagingDir))) return false;
       const res = await fetch(`${SUPABASE_URL}/${encodeObjectPath([objectPath])}`, {
-        headers: { Authorization: `Bearer ${SUPABASE_KEY}` },
+        headers: authHeaders(),
       });
-      if (!res.ok) continue;
+      if (!res.ok) return false;
       const body = Buffer.from(await res.arrayBuffer());
+      await fsp.mkdir(path.dirname(filePath), { recursive: true });
       await fsp.writeFile(filePath, body);
-      restored += 1;
       bytes += body.length;
-    }
-    if (restored) {
-      log("session_restored", { files: restored, bytes });
       return true;
+    });
+
+    const restored = written.filter(Boolean).length;
+
+    // Without creds.json the remaining key material is useless. Discard the
+    // staging copy rather than promote a session that cannot authenticate.
+    if (!restored || !fs.existsSync(path.join(stagingDir, "creds.json"))) {
+      await fsp.rm(stagingDir, { recursive: true, force: true });
+      log("session_restore_incomplete", { files: restored, expected: items.length });
+      return false;
     }
-    return false;
+
+    await fsp.mkdir(sessionDir, { recursive: true });
+    for (const name of await fsp.readdir(stagingDir)) {
+      await fsp.rename(path.join(stagingDir, name), path.join(sessionDir, name));
+    }
+    await fsp.rm(stagingDir, { recursive: true, force: true });
+
+    log("session_restored", { files: restored, bytes });
+    return true;
   } catch (e) {
+    await fsp.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
     log("session_restore_failed", { error: e.message });
     return false;
   }
@@ -157,7 +234,7 @@ export async function purgeRemote(log) {
   try {
     const listRes = await fetch(`${SUPABASE_URL}/storage/v1/object/list/${BUCKET}`, {
       method: "POST",
-      headers: { Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ prefix: `${PREFIX}/`, limit: 1000 }),
     });
     if (!listRes.ok) return { purged: 0, error: `list ${listRes.status}` };
@@ -175,7 +252,7 @@ export async function purgeRemote(log) {
 
     const delRes = await fetch(`${SUPABASE_URL}/storage/v1/object/${BUCKET}`, {
       method: "DELETE",
-      headers: { Authorization: `Bearer ${SUPABASE_KEY}`, "Content-Type": "application/json" },
+      headers: authHeaders({ "Content-Type": "application/json" }),
       body: JSON.stringify({ prefixes: names }),
     });
     if (!delRes.ok) return { purged: 0, error: `delete ${delRes.status}` };
