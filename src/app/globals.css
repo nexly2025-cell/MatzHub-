@@ -186,7 +186,7 @@ article, section, header, footer, nav, aside, main { min-width: 0; }
 .pb-safe { padding-bottom: calc(0.75rem + env(safe-area-inset-bottom, 0px)); }
 
 /* Var-driven utility colors */
-.bg-canvas{background:var(--c-canvas)}\.bg-surface{background:var(--c-surface)}.bg-surface2{background:var(--c-surface-2)}.bg-inverse{background:var(--c-inverse)}.bg-accent{background:var(--c-accent)}
+.bg-canvas{background:var(--c-canvas)}.bg-surface{background:var(--c-surface)}.bg-surface2{background:var(--c-surface-2)}.bg-inverse{background:var(--c-inverse)}.bg-accent{background:var(--c-accent)}
 .text-ink{color:var(--c-ink)}.text-muted{color:var(--c-muted)}.text-subtle{color:var(--c-subtle)}.text-accent{color:var(--c-accent)}.text-oninverse{color:var(--c-on-inverse)}
 .border-line{border-color:var(--c-line)}.border-linestrong{border-color:var(--c-line-strong)}
 .shadow-card{box-shadow:var(--shadow-card)}.shadow-lift{box-shadow:var(--shadow-lift)}
@@ -262,6 +262,32 @@ article, section, header, footer, nav, aside, main { min-width: 0; }
 .chip:hover { color: var(--c-ink); border-color: var(--c-line-strong); }
 .chip[data-on="true"] { background: var(--c-inverse); color: var(--c-on-inverse); border-color: var(--c-inverse); font-weight: 600; }
 
+/**
+ * Loading placeholder.
+ *
+ * Referenced by app/loading.tsx, the cart, the wishlist and the recently-viewed
+ * rail, but never defined — so every loading state rendered as an invisible
+ * zero-contrast box and the app looked frozen rather than busy.
+ *
+ * A slow, low-contrast sheen reads as considered; a fast grey flash reads as
+ * cheap. Static fill for reduced-motion users.
+ */
+.skeleton {
+  position: relative;
+  overflow: hidden;
+  background: var(--c-surface-2);
+}
+.skeleton::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  transform: translateX(-100%);
+  background: linear-gradient(90deg, transparent, var(--c-surface-3) 55%, transparent);
+  animation: sheen 1.6s ease-in-out infinite;
+}
+@keyframes sheen { to { transform: translateX(100%); } }
+@media (prefers-reduced-motion: reduce) { .skeleton::after { display: none; } }
+
 /* Motion */
 @keyframes rise { from { opacity: 0; transform: translateY(14px) } to { opacity: 1; transform: none } }
 .animate-rise { animation: rise .65s cubic-bezier(.2,.8,.2,1) both }
@@ -275,6 +301,43 @@ article, section, header, footer, nav, aside, main { min-width: 0; }
 * { scrollbar-width: none; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { scrollbar-width: none; }
+
+/* ---------------------------------------------------------------------------
+   Premium refinements.
+   Restraint over decoration: sharper type rendering, hairline borders that do
+   not muddy at 2x, and hover states that resolve rather than bounce. No new
+   colours, no extra motion, no additional markup.
+   ------------------------------------------------------------------------- */
+
+/* Proportional figures look wrong in prices and totals; tabular ones align. */
+.tabular-nums { font-variant-numeric: tabular-nums; }
+
+/* Display type reads tighter and more editorial with optical sizing on. */
+.display, .t-title, .t-heading, .font-display {
+  font-optical-sizing: auto;
+  font-synthesis-weight: none;
+}
+
+/* Product imagery: neutral base so a transparent PNG never lands on white-on-
+   white, and a hairline inset so a light product still reads as a card. */
+.surface, .card-lift { will-change: auto; }
+
+/* A card should settle, not leap. Shorter distance, softer curve. */
+.card-lift:hover { transform: translateY(-2px); }
+
+/* Buttons: the uppercase tracking is the luxury cue — keep the weight honest
+   and let opacity carry the hover rather than a colour shift. */
+.btn { -webkit-tap-highlight-color: transparent; }
+.btn-solid:hover { opacity: 0.9; box-shadow: var(--shadow-lift); }
+.btn-outline:hover { background: transparent; border-color: var(--c-ink); }
+
+/* Inputs: a focused field should feel deliberate, not alarmed. */
+.field { transition: border-color 0.25s ease, box-shadow 0.25s ease; }
+.field:focus { border-color: var(--c-accent); box-shadow: 0 0 0 3px var(--c-accent-soft); }
+.field[aria-invalid="true"] { border-color: var(--c-danger); }
+
+/* Links inside body copy: underline offset that clears descenders. */
+.t-body a, .measure a { text-underline-offset: 0.2em; text-decoration-thickness: 1px; }
 
 .skip-link { position: absolute; left: -9999px; top: 0; z-index: 200; }
 .skip-link:focus { left: 1rem; top: 1rem; background: var(--c-inverse); color: var(--c-on-inverse); padding: .6rem 1rem; border-radius: .4rem; }

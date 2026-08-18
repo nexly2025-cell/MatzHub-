@@ -1,6 +1,8 @@
 "use client";
 
 
+import { FREE_DELIVERY_OVER, DELIVERY_FEE, MAX_QTY_PER_LINE } from "@/lib/utils";
+
 const WISH_KEY = "mh_wish_v1";
 const RECENT_KEY = "mh_recent_v1";
 const AID_KEY = "mh_aid";
@@ -130,6 +132,59 @@ export function updateCartQty(id: string, variant: string | undefined, qty: numb
     if (item) item.qty = Math.min(10, Math.floor(qty));
   }
   write(CART_KEY, cart);
+}
+
+/**
+ * Reconciles the locally-stored cart against the live catalogue.
+ *
+ * localStorage can hold a line for weeks. Prices move, products get delisted
+ * and stock runs out, so the cart must never quote a stale number or hand the
+ * customer an order for something that cannot be sold. Lines whose product no
+ * longer resolves are dropped; surviving lines take the current price/title/
+ * image. Returns what changed so the UI can say so plainly.
+ *
+ * Network failure is non-fatal — the cart keeps working offline.
+ */
+export async function revalidateCart(): Promise<{ removed: string[]; repriced: string[]; soldOut: string[] }> {
+  const empty = { removed: [], repriced: [], soldOut: [] };
+  const cart = getCart();
+  if (!cart.length) return empty;
+
+  const ids = [...new Set(cart.map((i) => i.id))];
+  let live: Array<{ id: string; title: string; price: number; mrp: number; heroImage: string; availability: string }>;
+  try {
+    const res = await fetch(`/api/products/by-ids?ids=${encodeURIComponent(ids.join(","))}`);
+    if (!res.ok) return empty;
+    live = ((await res.json()) as { items?: typeof live }).items ?? [];
+  } catch {
+    return empty;
+  }
+  // A completely empty response usually means the request was blocked, not
+  // that the whole catalogue vanished. Never wipe a cart on that signal.
+  if (!live.length) return empty;
+
+  const by = new Map(live.map((p) => [p.id, p]));
+  const removed: string[] = [];
+  const repriced: string[] = [];
+  const soldOut: string[] = [];
+
+  const next: CartItem[] = [];
+  for (const line of cart) {
+    const p = by.get(line.id);
+    if (!p) {
+      removed.push(line.title);
+      continue;
+    }
+    if (p.availability === "out_of_stock") {
+      soldOut.push(p.title);
+      continue;
+    }
+    if (p.price !== line.price) repriced.push(p.title);
+    next.push({ ...line, title: p.title, image: p.heroImage || line.image, price: p.price, mrp: p.mrp });
+  }
+
+  if (removed.length || repriced.length || soldOut.length) write(CART_KEY, next);
+  return { removed, repriced, soldOut };
 }
 
 export function removeFromCart(id: string, variant: string | undefined) {

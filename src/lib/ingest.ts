@@ -12,7 +12,7 @@ import {
   productVariants,
   products,
 } from "@/db/schema";
-import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory } from "@/lib/ai";
+import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory, isAuthoritativeGroup } from "@/lib/ai";
 import { isAutoUploadEnabled } from "@/lib/telegram";
 import { uploadsPermitted } from "@/lib/subscription";
 import { classifyMessage, applyResolution } from "@/lib/reconcile";
@@ -91,6 +91,15 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   };
 
   // ---- 0. guard rails -------------------------------------------------
+  // Closed allowlist. The paired account sees 19 groups: nine live supplier
+  // channels, their nine near-empty duplicates, and one unrelated group.
+  // Only the nine may create products, so a repost in a duplicate group can
+  // never become a second listing and an unrelated group can never inject one.
+  if (!isAuthoritativeGroup(msg.groupId)) {
+    await log("rejected", { error: "group is not an authoritative supplier source" });
+    return { messageId: msg.messageId, stage: "rejected", reason: "unauthorised group" };
+  }
+
   if (!caption && !msg.imageUrl) {
     await log("rejected", { error: "empty message" });
     return { messageId: msg.messageId, stage: "rejected", reason: "empty message" };
@@ -337,7 +346,7 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         : msg.imageUrl
           ? [msg.imageUrl]
           : [],
-      heroImage: msg.imageUrls?.[0] ?? msg.imageUrl ?? "",
+      heroImage,
       videoUrl: msg.videoUrl ?? null,
       mediaType: msg.mediaType ?? (msg.videoUrl ? "video" : "image"),
       altText: enrichment.altText,

@@ -85,3 +85,75 @@ describe("per-bot allowlist", () => {
     expect(allowedFor("admin")).toEqual([]);
   });
 });
+
+/**
+ * Supplier group identity.
+ *
+ * The paired WhatsApp account sees 19 groups: nine live supplier channels,
+ * nine near-empty duplicates that share their display names, and one
+ * unrelated group. Telegram previously listed all of them, so every supplier
+ * appeared twice and a dead duplicate was one tap from becoming a source.
+ */
+describe("authoritative supplier groups", () => {
+  it("contains exactly the nine approved groups", async () => {
+    const { AUTHORITATIVE_GROUPS } = await import("@/lib/ai");
+    expect(AUTHORITATIVE_GROUPS).toHaveLength(9);
+    expect(AUTHORITATIVE_GROUPS.map((g) => g.name).sort()).toEqual(
+      [
+        "SHETTY SILKS SHOES Reseller's Grp",
+        "Shetty_Silks_ (Mens Section)",
+        "Smart Collections 12@ Premium/Luxury",
+        "Smart Collections_Clothing",
+        "Smart Collections_Footwear",
+        "Smart Collections_Perfumes",
+        "Smart Collections_Premium Bags",
+        "Smart Collections_Sunglasses",
+        "Smart Collections_Watches",
+      ].sort(),
+    );
+  });
+
+  it("uses unique JIDs as identity", async () => {
+    const { AUTHORITATIVE_GROUPS } = await import("@/lib/ai");
+    const jids = AUTHORITATIVE_GROUPS.map((g) => g.jid);
+    expect(new Set(jids).size).toBe(9);
+    for (const jid of jids) expect(jid).toMatch(/^\d+@g\.us$/);
+  });
+
+  it("drops duplicates, unknown groups and preserves order", async () => {
+    const { AUTHORITATIVE_GROUPS, resolveAuthoritativeGroups } = await import("@/lib/ai");
+    const live = AUTHORITATIVE_GROUPS[6];
+    const resolved = resolveAuthoritativeGroups([
+      { jid: live.jid, subject: live.name },
+      { jid: live.jid, subject: live.name },            // same JID twice
+      { jid: "120363088478963131@g.us", subject: live.name }, // 2-member twin
+      { jid: "120363420070237908@g.us", subject: "Mfbuddy watch group 13" },
+      { jid: null, subject: "" },
+    ]);
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].jid).toBe(live.jid);
+  });
+
+  it("is idempotent across repeated syncs", async () => {
+    const { AUTHORITATIVE_GROUPS, resolveAuthoritativeGroups } = await import("@/lib/ai");
+    const discovered = AUTHORITATIVE_GROUPS.map((g) => ({ jid: g.jid, subject: g.name }));
+    const a = resolveAuthoritativeGroups(discovered);
+    const b = resolveAuthoritativeGroups([...discovered, ...discovered]);
+    expect(a).toHaveLength(9);
+    expect(b.map((g) => g.jid)).toEqual(a.map((g) => g.jid));
+  });
+
+  it("never auto-admits a newly discovered group", async () => {
+    const { isAuthoritativeGroup, resolveAuthoritativeGroups } = await import("@/lib/ai");
+    expect(isAuthoritativeGroup("120363999999999999@g.us")).toBe(false);
+    expect(resolveAuthoritativeGroups([{ jid: "120363999999999999@g.us" }])).toEqual([]);
+  });
+
+  it("keeps the worker mapping in sync with the app allowlist", async () => {
+    const { AUTHORITATIVE_GROUPS } = await import("@/lib/ai");
+    const { readFile } = await import("node:fs/promises");
+    const map = JSON.parse(await readFile("worker/group-mapping.json", "utf8")) as Record<string, string>;
+    const jids = Object.keys(map).filter((k) => k.endsWith("@g.us"));
+    expect(jids.sort()).toEqual(AUTHORITATIVE_GROUPS.map((g) => g.jid).sort());
+  });
+});

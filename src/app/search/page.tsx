@@ -76,8 +76,7 @@ export default async function SearchPage({ searchParams }: Props) {
           <div className="surface py-16 text-center">
             <p className="display text-2xl mb-2">No match for “{q}”</p>
             <p className="mx-auto mb-6 max-w-md text-sm text-muted">
-              We log every empty search. If enough people look for this, we brief the sourcing pipeline and it usually
-              appears within a week.
+              Try one of the collections below — new pieces are added regularly.
             </p>
             <div className="flex flex-wrap justify-center gap-2">
               {cats.map((c) => (

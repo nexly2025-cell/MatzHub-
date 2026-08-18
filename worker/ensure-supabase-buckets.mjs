@@ -7,11 +7,18 @@ if (!SUPABASE_URL || !SUPABASE_KEY) {
   process.exit(0);
 }
 const buckets = ['products', 'product-media', 'wa-sessions'];
+// `apikey` is mandatory alongside the bearer token for sb_secret_* keys.
+// Without it Supabase Storage answers 400 and every bucket check "fails open".
+const authHeaders = (extra = {}) => ({
+  apikey: SUPABASE_KEY,
+  Authorization: `Bearer ${SUPABASE_KEY}`,
+  ...extra,
+});
 (async () => {
   try {
     for (const b of buckets) {
       const res = await fetch(`${SUPABASE_URL}/storage/v1/bucket/${b}`, {
-        headers: { Authorization: `Bearer ${SUPABASE_KEY}` },
+        headers: authHeaders(),
       });
       if (res.status === 200) {
         console.log('bucket exists', b);
@@ -23,10 +30,7 @@ const buckets = ['products', 'product-media', 'wa-sessions'];
       }
       const cre = await fetch(`${SUPABASE_URL}/storage/v1/bucket`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${SUPABASE_KEY}`,
-          'Content-Type': 'application/json',
-        },
+        headers: authHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ name: b, public: false }),
       });
       if (cre.ok) console.log('created bucket', b);

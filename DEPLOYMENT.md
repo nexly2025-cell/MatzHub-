@@ -149,36 +149,62 @@ The only production-appropriate hosts are ones that give you a long-lived, persi
 
 EC2 provides a highly resilient, isolated virtual machine. By setting up the worker under **Docker** with restart policies, or under **PM2**, the worker automatically restarts if it crashes, and automatically recovers when the EC2 instance is rebooted.
 
-#### Option A: Running with Docker on EC2 (Easiest & Most Isolated)
+#### Option A: Docker on the VM — `./deploy-worker.sh` (canonical)
 
-1. **Launch an EC2 Instance:**
-   - AMI: Ubuntu 22.04 LTS or Amazon Linux 2023.
-   - Instance Type: `t2.micro` or `t3.micro` (free tier).
-   - Security Group: Inbound TCP `8081` (port where worker listens) and SSH `22`.
+This is the supported path for an EC2 / GCE e2-micro class box. One command
+pulls, builds, replaces the container, health-checks it, and rolls back on
+failure. **It never touches the session volume**, so a deploy does not force a
+new QR scan.
 
-2. **Install Docker & Run:**
-   Connect via SSH to your instance and execute:
+1. **Launch the instance**
+   - Ubuntu 22.04 LTS or Amazon Linux 2023, 2 vCPU / 1 GB is enough.
+   - Security group: SSH `22` only. The worker binds to `127.0.0.1:8081`;
+     expose it publicly only behind a reverse proxy with TLS.
+
+2. **One-time setup**
    ```bash
-   sudo apt-get update && sudo apt-get install -y docker.io
+   sudo apt-get update && sudo apt-get install -y docker.io git
    sudo systemctl enable --now docker
+   sudo usermod -aG docker "$USER" && newgrp docker
 
-   # Run with auto-restart on failure or host reboot:
-   sudo docker run -d \
-     --name matzhub-worker \
-     --restart unless-stopped \
-     -p 8081:8081 \
-     -v /home/ubuntu/wa-session:/data/.wa-session \
-     -e MATZHUB_API_URL="https://matzhub.com" \
-     -e INGEST_TOKEN="<your_ingest_token>" \
-     -e WA_WORKER_PORT="8081" \
-     -e WA_WORKER_TOKEN="<your_worker_token>" \
-     -e SUPABASE_URL="https://yourproject.supabase.co" \
-     -e SUPABASE_SERVICE_ROLE_KEY="<your_service_role_key>" \
-     -e SUPABASE_BUCKET="products" \
-     -e SUPABASE_VIDEO_BUCKET="product-media" \
-     -e WA_SESSION_DIR="/data/.wa-session" \
-     nexly2025/matzhub-worker:latest  # Or build it locally from the cloned repo
+   git clone https://github.com/nexly2025-cell/MatzHub-.git
+   cd MatzHub-/worker
+   cp .env.example .env && ${EDITOR:-nano} .env   # fill in the tokens
+   chmod 600 .env                                 # secrets stay off the CLI
+   chmod +x deploy-worker.sh
    ```
+
+3. **Every deploy after that**
+   ```bash
+   cd ~/MatzHub-/worker && ./deploy-worker.sh
+   ```
+
+   The script:
+   - `git pull --ff-only` on the current branch
+   - builds `matzhub-worker:candidate`
+   - stops the old container with SIGTERM (its shutdown hook uploads the
+     Baileys session to Supabase Storage first)
+   - starts the new one with `--restart unless-stopped`, the `wa-session`
+     named volume mounted at `/data`, and a 700 MB memory cap
+   - polls `/health` for up to 180 s and reports `connected` or `awaiting_qr`
+   - restores the previous image if the new one never comes up
+
+> **Never run `docker volume rm wa-session`.** That volume *is* the WhatsApp
+> pairing. Deleting it is the only thing in normal operations that forces a
+> re-scan. `deploy-worker.sh` prunes dangling *images* only.
+
+Manual equivalent, if you need to run it by hand — note `--env-file`, so no
+secret ever lands in shell history:
+
+```bash
+docker build -t matzhub-worker:current ~/MatzHub-/worker
+docker run -d --name matzhub-worker --restart unless-stopped \
+  --env-file ~/MatzHub-/worker/.env \
+  -e WA_SESSION_DIR=/data/.wa-session -e WA_WORKER_PORT=8081 \
+  -v wa-session:/data -p 127.0.0.1:8081:8081 \
+  --memory 700m --log-opt max-size=10m --log-opt max-file=3 \
+  matzhub-worker:current
+```
 
 #### Option B: Running with PM2 directly on EC2 (No Docker Required)
 

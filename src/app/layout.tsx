@@ -96,11 +96,6 @@ const orgLd = {
       name: SITE.name,
       publisher: { "@id": `${SITE.url}/#organization` },
       inLanguage: "en-IN",
-      potentialAction: {
-        "@type": "SearchAction",
-        target: { "@type": "EntryPoint", urlTemplate: `${SITE.url}/search?q={search_term_string}` },
-        "query-input": "required name=search_term_string",
-      },
     },
     {
       "@type": "OnlineStore",
@@ -108,7 +103,6 @@ const orgLd = {
       name: SITE.name,
       url: SITE.url,
       currenciesAccepted: "INR",
-      paymentAccepted: "UPI, Card, Bank Transfer",
       areaServed: { "@type": "Country", name: "India" },
       hasMerchantReturnPolicy: {
         "@type": "MerchantReturnPolicy",

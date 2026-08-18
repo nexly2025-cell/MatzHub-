@@ -329,6 +329,14 @@ export const orders = pgTable(
     costTotal: integer("cost_total").notNull().default(0),
     profit: integer("profit").notNull().default(0),
 
+    /**
+     * Deterministic hash of (phone + line items + total) for a short window.
+     * A double-tapped "Place order" button, or a client retry after a timeout,
+     * previously produced two identical orders — verified in testing. The
+     * unique index below makes the second insert a no-op instead.
+     */
+    idempotencyKey: text("idempotency_key"),
+
     couponCode: text("coupon_code"),
     paymentMode: text("payment_mode").notNull().default("prepaid"), // prepaid | upi | bank
     paymentStatus: text("payment_status").notNull().default("pending"),

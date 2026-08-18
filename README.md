@@ -21,6 +21,14 @@ Telegram    = admin + dev bots → Vercel webhooks → worker control
 
 Nothing in production runs on a laptop, Codespace, or `docker compose up`.
 Full deployment: `DEPLOYMENT.md`. Day-to-day: `OPS.md`.
+Worker redeploy is one command: `cd worker && ./deploy-worker.sh`.
+
+> **Security notice.** A live Supabase Postgres URL (password inline) was
+> committed in `src/db/index.ts` as a fallback and is therefore in git history.
+> It has been removed from the code — `DATABASE_URL` is now the only source —
+> but the credential itself must be rotated in
+> Supabase → Settings → Database → *Reset database password*, then updated in
+> the Vercel project env and in `worker/.env`.
 
 ## Local dev — clean clone
 

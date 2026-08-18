@@ -32,17 +32,29 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
             />
           </div>
 
-          {/* One quiet label per card. More badges = discount bin. */}
-          {off > 0 && (
-            <span className="label absolute left-3 top-3 rounded-full bg-surface/92 px-2.5 py-1 text-ink backdrop-blur-sm text-accent font-medium">
-              -{off}%
-            </span>
-          )}
-          {p.availability === "low_stock" && (
-            <span className="label absolute left-3 top-3 rounded-full bg-surface/92 px-2.5 py-1 text-ink backdrop-blur-sm">
-              Nearly gone
-            </span>
-          )}
+          {/* Both labels used to be pinned to the same corner, so a
+              discounted low-stock piece rendered them on top of each other.
+              They stack now, and availability wins the eye when it matters. */}
+          <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-1.5">
+            {p.availability === "out_of_stock" ? (
+              <span className="label rounded-full bg-surface/92 px-2.5 py-1 text-muted backdrop-blur-sm">
+                Sold out
+              </span>
+            ) : (
+              <>
+                {off > 0 && (
+                  <span className="label rounded-full bg-surface/92 px-2.5 py-1 font-medium text-accent backdrop-blur-sm">
+                    -{off}%
+                  </span>
+                )}
+                {p.availability === "low_stock" && (
+                  <span className="label rounded-full bg-surface/92 px-2.5 py-1 text-ink backdrop-blur-sm">
+                    Nearly gone
+                  </span>
+                )}
+              </>
+            )}
+          </div>
 
           <button
             type="button"
@@ -64,9 +76,8 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
 
         </div>
 
-        <div className="space-y-1.5 pt-3.5">
-          <p className="label text-subtle">{p.sku}</p>
-          <h3 className="line-clamp-1 text-[13.5px] font-medium text-ink sm:text-sm">{p.title}</h3>
+        <div className="space-y-1 pt-3">
+          <h3 className="line-clamp-2 text-[13.5px] font-medium leading-snug text-ink sm:text-sm">{p.title}</h3>
           <p className="line-clamp-1 text-[12px] text-muted">{[p.brand, p.color].filter(Boolean).join(" · ")}</p>
           {/* Single honest price on the grid. The comparison lives on the detail page. */}
           <p className="pt-0.5 font-display text-[19px] text-ink">{inr(p.price)}</p>

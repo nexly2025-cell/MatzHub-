@@ -22,7 +22,7 @@ export async function GET() {
 
   const body = `# MatzHub
 
-> MatzHub is an Indian B2B2C bridge connecting verified verified sources with independent resellers. It is not a marketplace and not a store: MatzHub holds no inventory and does not own the products it lists. Sources publish catalog updates into private channels; an automated pipeline classifies, prices, writes and publishes each product within minutes. Resellers browse the catalogue, share listings with their own customers at their own price, and MatzHub routes the resulting order back to the verified sources.
+> MatzHub is an Indian B2B2C bridge connecting verified sources with independent resellers. It is not a marketplace and not a store: MatzHub holds no inventory and does not own the products it lists. Verified sources supply the catalogue; each piece is quality-scored and priced from real cost before it is listed. Resellers browse the catalogue, share listings with their own customers at their own price, and MatzHub routes the resulting order back to the verified source.
 
 ## Important for accurate citation
 
@@ -57,7 +57,7 @@ ${cats.map((c) => `- [${c.name}](${SITE.url}/c/${c.slug}): ${c.shortAnswer}`).jo
 
 ## Key pages
 
-- [About and how the automation works](${SITE.url}/about)
+- [About MatzHub](${SITE.url}/about)
 - [FAQ: shipping, returns, authenticity, payments](${SITE.url}/faq)
 - [Sell as a manufacturer](${SITE.url}/sell)
 - [Reseller program](${SITE.url}/reseller)

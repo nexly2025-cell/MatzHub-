@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { getWishlist, pushRecent, subscribe, toggleWishlist, track, addToCart } from "@/lib/client-store";
-import { SITE, inr, savePercent, waLink } from "@/lib/utils";
+import { getWishlist, pushRecent, subscribe, toggleWishlist, track, addToCart, FREE_DELIVERY_OVER, DELIVERY_FEE, MAX_QTY_PER_LINE, type CartItem } from "@/lib/client-store";
+import { buildOrderMessage } from "@/lib/order-message";
+import { inr, savePercent, waLink } from "@/lib/utils";
 
 type P = {
   id: string;
@@ -57,6 +58,16 @@ export default function BuyBox({
   const selectedVariant = variants.find((v) => v.label === variant);
   const unavailable = soldOut || selectedVariant?.stockQty === 0;
 
+  // One order format for the whole site. The cart builds the same message from
+  // the same helper, so a single-item "Buy on WhatsApp" and a cart checkout
+  // arrive looking identical to whoever answers the chat.
+  const asLine = (): CartItem[] => [
+    { id: p.id, slug: p.slug, title: p.title, image: p.heroImage, price: p.price, mrp: p.mrp, variant: variant || undefined, qty, sku: p.sku },
+  ];
+  const orderHref = (): string =>
+    soldOut
+      ? waLink(`Hi MatzHub, is this back in stock?\n${p.title}${variant ? ` (${variant})` : ""}\nSKU ${p.sku}`)
+      : waLink(buildOrderMessage(asLine()));
   useEffect(() => {
     pushRecent(p.id);
     track("view_item", { productId: p.id, value: p.price });
@@ -95,11 +106,8 @@ export default function BuyBox({
               </>
             )}
           </div>
-          <p className="mt-2 text-[11.5px] text-muted">
-            The small line shows conventional retail for a comparable piece. The green number is yours.
-          </p>
-          <p className="mt-1.5 text-[12px] text-muted">
-            Taxes included · {p.price >= 999 ? "courier free pan-India" : "₹59 courier"}
+          <p className="mt-2 text-[12px] text-muted">
+            Taxes included · {p.price >= FREE_DELIVERY_OVER ? "free pan-India delivery" : `${inr(DELIVERY_FEE)} delivery`}
           </p>
         </div>
 
@@ -129,7 +137,7 @@ export default function BuyBox({
           <div className="flex items-center rounded-full border border-linestrong">
             <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))} className="h-11 w-11 text-lg text-muted hover:text-ink" aria-label="Decrease quantity">−</button>
             <span className="w-7 text-center text-sm tabular-nums" aria-live="polite">{qty}</span>
-            <button type="button" onClick={() => setQty((q) => Math.min(10, q + 1))} className="h-11 w-11 text-lg text-muted hover:text-ink" aria-label="Increase quantity">+</button>
+            <button type="button" onClick={() => setQty((q) => Math.min(MAX_QTY_PER_LINE, q + 1))} className="h-11 w-11 text-lg text-muted hover:text-ink" aria-label="Increase quantity">+</button>
           </div>
         </div>
 
@@ -145,7 +153,7 @@ export default function BuyBox({
 
         <a
           className="btn btn-whatsapp mt-2 w-full"
-          href={waLink(`Hi MatzHub, I'd like to order:\n${p.title}${variant ? ` (${variant})` : ""}${qty > 1 ? ` x${qty}` : ""}\nSKU ${p.sku}\n${SITE.url}/p/${p.slug}`)}
+          href={orderHref()}
           target="_blank"
           rel="noopener noreferrer"
           aria-disabled={soldOut}
@@ -207,7 +215,7 @@ export default function BuyBox({
           </button>
           <a
             className="btn btn-whatsapp h-12 flex-1 text-[14px]"
-            href={waLink(`Hi MatzHub, I'd like to order:\n${p.title}${variant ? ` (${variant})` : ""}${qty > 1 ? ` x${qty}` : ""}\nSKU ${p.sku}\n${SITE.url}/p/${p.slug}`)}
+            href={orderHref()}
             target="_blank"
             rel="noopener noreferrer"
             onClick={() => track("whatsapp_order", { productId: p.id, value: p.price * qty })}

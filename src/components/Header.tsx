@@ -2,8 +2,8 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
-import { usePathname, useRouter } from "next/navigation";
+import { useEffect, useState } from "react";
+import { usePathname } from "next/navigation";
 import { getWishlist, subscribe, anonId, getCart } from "@/lib/client-store";
 
 const NAV = [
@@ -27,27 +27,17 @@ function Icon({ d, size = 19 }: { d: string; size?: number }) {
 
 const ICONS = {
   menu: "M3 6h18M3 12h18M3 18h18",
-  search: "M11 4a7 7 0 1 0 0 14 7 7 0 0 0 0-14zm9.5 15.5-4-4",
   heart: "M20.8 5.6a5 5 0 00-7.1 0L12 7.3l-1.7-1.7a5 5 0 10-7.1 7.1L12 21.5l8.8-8.8a5 5 0 000-7.1z",
   x: "M6 6l12 12M18 6L6 18",
-  track: "M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zm0-5v-4m0-4h.01",
   cart: "M6 2L3 6v14a2 2 0 002 2h14a2 2 0 002-2V6l-3-4H6z M3 6h18 M16 10a4 4 0 01-8 0",
 };
 
-type Suggestion = { slug: string; title: string; price: number; image: string };
-
 export default function Header() {
   const pathname = usePathname();
-  const router = useRouter();
   const [scrolled, setScrolled] = useState(false);
   const [menu, setMenu] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [q, setQ] = useState("");
   const [wish, setWish] = useState(0);
   const [cartCount, setCartCount] = useState(0);
-  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
-  const inputRef = useRef<HTMLInputElement>(null);
-  const searchTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const sync = () => {
@@ -69,46 +59,16 @@ export default function Header() {
   }, []);
 
   useEffect(() => {
-    const t = setTimeout(() => {
-      setMenu(false);
-      setSearchOpen(false);
-    }, 0);
+    const t = setTimeout(() => setMenu(false), 0);
     return () => clearTimeout(t);
   }, [pathname]);
 
   useEffect(() => {
-    document.body.style.overflow = menu || searchOpen ? "hidden" : "";
-    if (searchOpen) setTimeout(() => inputRef.current?.focus(), 90);
+    document.body.style.overflow = menu ? "hidden" : "";
     return () => {
       document.body.style.overflow = "";
     };
-  }, [menu, searchOpen]);
-
-  const onSearchChange = (value: string) => {
-    setQ(value);
-    if (searchTimer.current) clearTimeout(searchTimer.current);
-    if (value.trim().length < 2) {
-      setSuggestions([]);
-      return;
-    }
-    searchTimer.current = setTimeout(async () => {
-      try {
-        const res = await fetch(`/api/search?q=${encodeURIComponent(value.trim())}&limit=5`);
-        if (!res.ok) return;
-        const data = (await res.json()) as { items?: Array<{ slug: string; title: string; price: number; image: string }> };
-        setSuggestions((data.items ?? []).slice(0, 5));
-      } catch {
-        setSuggestions([]);
-      }
-    }, 220);
-  };
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!q.trim()) return;
-    setSearchOpen(false);
-    router.push(`/search?q=${encodeURIComponent(q.trim())}`);
-  };
+  }, [menu]);
 
   if (pathname?.startsWith("/admin")) return null;
 
@@ -158,9 +118,6 @@ export default function Header() {
           </nav>
 
           <div className="ml-auto flex items-center gap-1">
-            <button aria-label="Search" onClick={() => setSearchOpen(true)} className="grid h-10 w-10 place-items-center rounded-full text-ink hover:bg-surface-2">
-              <Icon d={ICONS.search} />
-            </button>
             <Link href="/wishlist" aria-label={`Wishlist, ${wish} items`} className="relative grid h-10 w-10 place-items-center rounded-full text-ink hover:bg-surface-2">
               <Icon d={ICONS.heart} />
               {wish > 0 && <Badge n={wish} />}
@@ -201,49 +158,6 @@ export default function Header() {
         </aside>
       </div>
 
-      {/* Full-screen search.
-          Mounted only while open. It previously rendered permanently with an
-          opaque bg-surface panel and only `pointer-events-none`, so a white
-          "Search the catalogue" sheet sat over the top of every page on load.
-          Conditional mounting also keeps the phrase out of the SSR HTML, where
-          it competed with real page content for crawlers. */}
-      {searchOpen && (
-      <div className="fixed inset-0 z-50">
-        <div className="absolute inset-0 transition-opacity duration-300 opacity-100" style={{ background: "var(--c-scrim)" }} onClick={() => setSearchOpen(false)} />
-        <div className="relative bg-surface">
-          <form onSubmit={submit} role="search" className="mx-auto max-w-3xl px-4 py-14 sm:px-6">
-            <label htmlFor="mh-search" className="eyebrow mb-3 block">Search the catalogue</label>
-            <input
-              id="mh-search"
-              ref={inputRef}
-              value={q}
-              onChange={(e) => onSearchChange(e.target.value)}
-              type="search"
-              placeholder="Watches, oud, handbags, sneakers…"
-              className="w-full border-b border-linestrong bg-transparent pb-4 font-display text-[28px] outline-none placeholder:text-subtle sm:text-[38px]"
-              autoComplete="off"
-            />
-            {suggestions.length > 0 && (
-              <ul className="divide-y divide-line">
-                {suggestions.map((s) => (
-                  <li key={s.slug}>
-                    <Link href={`/p/${s.slug}`} onClick={() => setSearchOpen(false)} className="flex items-center gap-3 py-3 hover:bg-surface-2">
-                      <div className="relative h-12 w-10 shrink-0 overflow-hidden rounded bg-surface-3">
-                        <Image src={s.image} alt="" fill sizes="40px" className="object-cover" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <p className="truncate text-[13px] text-ink">{s.title}</p>
-                        <p className="text-[11px] text-muted">₹{s.price.toLocaleString("en-IN")}</p>
-                      </div>
-                    </Link>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </form>
-        </div>
-      </div>
-      )}
     </>
   );
 }
@@ -257,15 +171,6 @@ function Badge({ n }: { n: number }) {
 }
 
 /* ----------------------------- Theme picker ----------------------------- */
-
-const THEMES: Array<{ id: string; name: string; swatch: [string, string, string] }> = [
-  { id: "porcelain", name: "Porcelain", swatch: ["#F3F1EC", "#1F5F5B", "#15201E"] },
-  { id: "clay", name: "Clay", swatch: ["#F8F4EF", "#A8552F", "#2A211B"] },
-  { id: "atelier", name: "Atelier", swatch: ["#F2F3F5", "#27417E", "#14161C"] },
-  { id: "maison", name: "Maison", swatch: ["#F4F1EE", "#6F1F2E", "#24191A"] },
-  { id: "botanic", name: "Botanic", swatch: ["#F2F4F0", "#3E6428", "#1C2218"] },
-  { id: "espresso", name: "Espresso", swatch: ["#161110", "#B98A4B", "#EFE9DF"] },
-];
 
 /**
  * Theme toggle — two themes only, Porcelain (light) and Espresso (dark).

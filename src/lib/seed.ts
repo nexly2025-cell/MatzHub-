@@ -133,7 +133,7 @@ export async function bootstrapTaxonomy() {
         faqs: c.faqs,
         seoTitle: `${c.name} Online — Manufacturer Direct Prices | MatzHub`,
         seoDescription: `Buy ${c.name.toLowerCase()} direct from quality-scored suppliers on MatzHub. Honest pricing, pan-India delivery, standard courier timing, 7-day replacement.`,
-        keywords: [`buy ${c.name.toLowerCase()} online india`, `imported ${c.name.toLowerCase()}`, `${c.name.toLowerCase()} cod`],
+        keywords: [`buy ${c.name.toLowerCase()} online india`, `imported ${c.name.toLowerCase()}`, `${c.name.toLowerCase()} india`],
       })
       .onConflictDoNothing()
       .returning();

@@ -250,6 +250,19 @@ Check state any time with `/payment` in the admin bot.
 ## Recovery procedures
 
 **Worker process is down** (`/worker` shows unreachable):
+- VM + Docker (canonical). From `~/MatzHub-/worker`:
+  | Command             | Does                                              |
+  | ------------------- | ------------------------------------------------- |
+  | `./wa.sh status`    | container + WhatsApp state + memory + session vol  |
+  | `./wa.sh health`    | raw `/health` JSON                                 |
+  | `./wa.sh logs`      | follow logs                                        |
+  | `./wa.sh restart`   | recycle container (session preserved)              |
+  | `./wa.sh qr`        | write the current pairing QR to `qr.png`           |
+  | `./deploy-worker.sh`| pull → build → replace → health-check → rollback   |
+
+  Never run `docker volume rm wa-session` — that volume *is* the WhatsApp
+  pairing, and deleting it is the only normal-operations action that forces a
+  re-scan.
 - AWS EC2 (PM2): `pm2 status`, `pm2 logs`, `pm2 restart matzhub-worker`.
 - Fly.io: `fly status -a matzhub-worker && fly logs -a matzhub-worker`.
 - Restart: `fly apps restart matzhub-worker` or `pm2 restart matzhub-worker` (or your host's equivalent).

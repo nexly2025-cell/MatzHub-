@@ -1,7 +1,7 @@
 import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { automationRuns, categories, manufacturers, opsTasks, products, settings } from "@/db/schema";
-import { detectCategory } from "@/lib/ai";
+import { detectCategory, AUTHORITATIVE_GROUPS, resolveAuthoritativeGroups } from "@/lib/ai";
 import { inr, relativeTime } from "@/lib/utils";
 import { createSubscriptionOrder, SUBSCRIPTION_PRICE_INR, subscriptionStatus } from "@/lib/subscription";
 import {

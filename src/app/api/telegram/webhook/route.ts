@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { eq, lte, and } from "drizzle-orm";
+import { and, eq, like, lt, lte } from "drizzle-orm";
 import { db } from "@/db";
 import { settings, telegramEphemeral } from "@/db/schema";
 import { keyboardFor, lookupSku, parseCommand, runCommand, SKU_PATTERN, type Button } from "@/lib/telegram";
@@ -175,6 +175,31 @@ async function repin(bot: BotKind, chatId: string, kind: "panel" | "dashboard", 
     .onConflictDoUpdate({ target: settings.key, set: { value: String(messageId), updatedAt: new Date() } });
 }
 
+/**
+ * Claims a callback_query id exactly once.
+ *
+ * Telegram re-delivers an update whenever the webhook is slow or returns a
+ * non-2xx, and several of these buttons are not idempotent (restart, relink,
+ * approve, pause). Without a claim, one impatient tap could run the same
+ * destructive command twice. The insert is the lock: the first caller wins,
+ * every retry sees the conflict and is dropped.
+ *
+ * Fails OPEN. If the settings table is unreachable the operator still gets
+ * their command — a dedupe outage must not brick the control plane.
+ */
+async function claimCallback(callbackId: string): Promise<boolean> {
+  try {
+    const rows = await db
+      .insert(settings)
+      .values({ key: `tg_cb:${callbackId}`, value: "1" })
+      .onConflictDoNothing()
+      .returning({ key: settings.key });
+    return rows.length > 0;
+  } catch {
+    return true;
+  }
+}
+
 /** Routine status output self-destructs after this long. */
 const EPHEMERAL_TTL_MS = 5 * 60 * 1000;
 
@@ -220,6 +245,14 @@ export async function sweepExpiredMessages(): Promise<number> {
     await db.delete(telegramEphemeral).where(eq(telegramEphemeral.id, row.id));
     deleted += 1;
   }
+
+  // Callback claim tokens are only useful for the length of Telegram's retry
+  // window. Dropping them here keeps the settings table from growing forever.
+  await db
+    .delete(settings)
+    .where(and(like(settings.key, "tg_cb:%"), lt(settings.updatedAt, new Date(Date.now() - 60 * 60 * 1000))))
+    .catch(() => undefined);
+
   return deleted;
 }
 
@@ -278,7 +311,11 @@ export async function handleUpdate(request: Request, bot: BotKind) {
       return NextResponse.json({ ok: true });
     }
     const chat = String(cbChat);
+    // Clear the spinner first — Telegram only allows ~10s and an unanswered
+    // callback leaves the button visibly stuck.
     await answerCallback(bot, cb.id);
+    // Then make sure this is the first (and only) time we act on it.
+    if (!(await claimCallback(cb.id))) return NextResponse.json({ ok: true });
     const [command, ...cbArgs] = (cb.data ?? "").split(":").length > 1 && (cb.data ?? "").startsWith("m:")
       ? [cb.data ?? "m:home"]
       : (cb.data ?? "").split(" ");

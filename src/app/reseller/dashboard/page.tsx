@@ -49,7 +49,9 @@ export default async function ResellerDashboard() {
           </p>
         </div>
         <div className="flex gap-2">
-          <Link href="/reseller/api/my-catalogue" className="btn btn-ghost">Catalogue feed</Link>
+          {/* /reseller/api/my-catalogue never existed — this button 404'd.
+              /products.json is the real published catalogue feed. */}
+          <a href="/products.json" target="_blank" rel="noopener noreferrer" className="btn btn-ghost">Catalogue feed</a>
           <Link href="/" className="btn btn-outline">Browse</Link>
         </div>
       </div>
