@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # MatzHub persistent WhatsApp worker operations.
-# Usage: ./deploy-worker.sh [deploy|update|rebuild|status|logs|restart]
+# Usage: ./deploy-worker.sh [deploy|update|rebuild|status|health|logs|restart|qr]
 # The wa-session volume is never removed by this script.
 set -Eeuo pipefail
 
@@ -57,10 +57,45 @@ case "$ACTION" in
     worker_health || fail "Worker control endpoint is unavailable."
     exit 0
     ;;
+  health)
+    require_docker
+    worker_health || fail "Worker control endpoint is unavailable."
+    exit 0
+    ;;
   logs)
     require_docker
     docker logs --tail "${WA_WORKER_LOG_LINES:-200}" "$CONTAINER_NAME"
     exit 0
+    ;;
+  qr)
+    # State-aware by design. A connected session must never be asked to mint a
+    # pairing code, so this reports connected and stops. It NEVER calls /relink:
+    # that discards live credentials and is the one action that can strand the
+    # paired account. Pairing a genuinely unpaired account is the only path that
+    # writes a QR file.
+    require_docker
+    token="$(sed -n 's/^WA_WORKER_TOKEN=//p' "$ENV_FILE" | tail -1)"
+    [[ -n "$token" ]] || fail "WA_WORKER_TOKEN is not set in $ENV_FILE"
+    payload="$(docker exec -e WA_TOKEN="$token" "$CONTAINER_NAME" node -e "
+      fetch('http://127.0.0.1:8081/qr', { headers: { Authorization: 'Bearer ' + process.env.WA_TOKEN } })
+        .then(async r => { process.stdout.write(await r.text()); })
+        .catch(() => process.exit(1));" 2>/dev/null || true)"
+    [[ -n "$payload" ]] || fail "Worker did not answer /qr."
+    case "$payload" in
+      *'"status":"connected"'*)
+        echo "WhatsApp is already connected. No QR needed — do not re-pair."
+        exit 0 ;;
+      *pngBase64*)
+        printf '%s' "$payload" \
+          | sed -n 's/.*"pngBase64":"\([^"]*\)".*/\1/p' \
+          | base64 -d > "$SCRIPT_DIR/qr.png"
+        [[ -s "$SCRIPT_DIR/qr.png" ]] || fail "QR payload was empty."
+        echo "Wrote $SCRIPT_DIR/qr.png — scan it with the WhatsApp number you are pairing."
+        exit 0 ;;
+      *)
+        printf '%s\n' "$payload"
+        exit 0 ;;
+    esac
     ;;
   restart)
     require_docker
@@ -75,7 +110,7 @@ case "$ACTION" in
     exit 0
     ;;
   deploy|update|rebuild) ;;
-  *) fail "Unknown command '$ACTION'. Use deploy, update, rebuild, status, logs, or restart." ;;
+  *) fail "Unknown command '$ACTION'. Use deploy, update, rebuild, status, health, logs, restart, or qr." ;;
 esac
 
 require_docker
