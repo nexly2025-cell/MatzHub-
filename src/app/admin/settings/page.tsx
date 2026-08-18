@@ -9,8 +9,6 @@ const MODULES = [
   { key: "selling_margin_percent", label: "Selling margin (%)", help: "Cost markup for the live selling price. Global; applies on the next reprice.", current: "15" },
   { key: "original_markup_percent", label: "Original markup (%)", help: "Display markup for the struck-through original price.", current: "40" },
   { key: "free_shipping_threshold", label: "Free shipping threshold (₹)", help: "Order minimum for free shipping. Currently static in code.", current: "999" },
-  { key: "auto_publish_quality_floor", label: "Auto-publish quality floor", help: "Products below this quality score wait for review instead of auto-publishing.", current: "55" },
-  { key: "auto_publish_confidence_floor", label: "Auto-publish confidence floor", help: "Products below this AI confidence wait for review (0-100 scale maps to 0-1).", current: "60" },
   { key: "product_expiry_days", label: "Product expiry (days)", help: "Products auto-archive after this many days unless reconfirmed by the supplier.", current: "45" },
 ];
 

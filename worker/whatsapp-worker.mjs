@@ -57,29 +57,49 @@ const CONFIG = {
 const log = (event, data = {}) =>
   console.log(JSON.stringify({ ts: new Date().toISOString(), event, ...data }));
 
-// Load optional group->category mapping (by JID). This file is editable by operators.
+// Supplier source policy. JIDs are strongest when available; verified group
+// names are the safe bootstrap boundary before a live worker reports each JID.
 const GROUP_MAP_PATH = path.join(__dirname, "group-mapping.json");
 let GROUP_MAP = {};
+let GROUP_NAME_MAP = {};
+
+function normaliseGroupName(value) {
+  return String(value || "")
+    .normalize("NFKD")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
 try {
   if (fs.existsSync(GROUP_MAP_PATH)) {
-    GROUP_MAP = JSON.parse(fs.readFileSync(GROUP_MAP_PATH, "utf8"));
-    log("group_map_loaded", { count: Object.keys(GROUP_MAP).length });
+    const parsed = JSON.parse(fs.readFileSync(GROUP_MAP_PATH, "utf8"));
+    GROUP_MAP = parsed.jids || parsed;
+    GROUP_NAME_MAP = Object.fromEntries(
+      (Array.isArray(parsed.names) ? parsed.names : [])
+        .filter((entry) => entry && entry.name)
+        .map((entry) => [normaliseGroupName(entry.name), entry.category || null]),
+    );
+    log("group_map_loaded", { jids: Object.keys(GROUP_MAP).length, names: Object.keys(GROUP_NAME_MAP).length });
   }
 } catch (e) {
   log("group_map_error", { error: e.message });
   GROUP_MAP = {};
+  GROUP_NAME_MAP = {};
 }
 
 function getMappedCategory(jid, groupName) {
   if (!jid) return null;
   if (GROUP_MAP[jid]) return GROUP_MAP[jid];
-  // fallback: try to match by subject fragments
+  const key = normaliseGroupName(groupName);
+  if (Object.prototype.hasOwnProperty.call(GROUP_NAME_MAP, key)) return GROUP_NAME_MAP[key];
+  // Category words still provide a useful fallback for a verified group with a
+  // descriptive subject, while exact name/JID matching remains the boundary.
   if (groupName) {
     const name = groupName.toLowerCase();
-    for (const k of Object.keys(GROUP_MAP)) {
-      const v = GROUP_MAP[k];
-      if (!v) continue;
-      if (name.includes(String(v).toLowerCase())) return v;
+    for (const category of Object.values(GROUP_MAP)) {
+      if (category && name.includes(String(category).toLowerCase())) return category;
     }
   }
   return null;
@@ -94,15 +114,16 @@ function getMappedCategory(jid, groupName) {
  */
 function isAllowedGroup(jid, groupName = "") {
   if (CONFIG.groupIds.length) return CONFIG.groupIds.includes(jid);
+  if (Object.prototype.hasOwnProperty.call(GROUP_MAP, jid)) return true;
+  if (Object.prototype.hasOwnProperty.call(GROUP_NAME_MAP, normaliseGroupName(groupName))) return true;
+  // Optional development-only narrowing for temporary operational testing.
   if (CONFIG.groups.length) return CONFIG.groups.some((group) => groupName.toLowerCase().includes(group.toLowerCase()));
-  if (Object.keys(GROUP_MAP).length) return Object.prototype.hasOwnProperty.call(GROUP_MAP, jid);
   return process.env.NODE_ENV !== "production";
 }
 
 function watchedGroupCount() {
   if (CONFIG.groupIds.length) return CONFIG.groupIds.length;
-  if (CONFIG.groups.length) return CONFIG.groups.length;
-  return Object.keys(GROUP_MAP).length;
+  return Object.keys(GROUP_MAP).length + Object.keys(GROUP_NAME_MAP).length;
 }
 
 /* ------------------------------------------------------------------ */
@@ -507,7 +528,7 @@ async function start() {
         } catch {
           groupName = "";
         }
-        if (CONFIG.groups.length && !CONFIG.groups.some((g) => groupName.toLowerCase().includes(g.toLowerCase()))) continue;
+        if (!isAllowedGroup(jid, groupName)) continue;
 
         const imageMsg = m.message?.imageMessage || null;
         const videoMsg = m.message?.videoMessage || null;
@@ -603,7 +624,7 @@ async function start() {
     const groups = await sock.groupFetchAllParticipating().catch(() => ({}));
     for (const [jid, meta] of Object.entries(groups || {})) {
       const subject = meta?.subject || "";
-      if (CONFIG.groups.length && !CONFIG.groups.some((g) => subject.toLowerCase().includes(g.toLowerCase()))) continue;
+      if (!isAllowedGroup(jid, subject)) continue;
       const anchor = newestKeyByJid.get(jid);
       if (!anchor) continue; // nothing seen yet in this group; nothing to anchor on
       try {

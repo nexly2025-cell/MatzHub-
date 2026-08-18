@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { db } from "@/db";
 import { automationRuns } from "@/db/schema";
 import { ingestBatch, type RawMessage } from "@/lib/ingest";
+import { isApprovedSupplierGroup } from "@/lib/supplier-groups";
 import { isMaintenanceMode } from "@/lib/telegram";
 
 /**
@@ -40,18 +41,13 @@ export async function POST(request: Request) {
     ? (payload as { messages: RawMessage[] }).messages
     : [payload as RawMessage];
 
-  // Hard isolation: WhatsApp group JIDs, not phone-number suffixes, are the
-  // authoritative source boundary. The worker applies the same allow-list.
-  const allowedGroupIds = (process.env.WA_GROUP_IDS ?? "").split(",").map((group) => group.trim()).filter(Boolean);
-  if (process.env.NODE_ENV === "production" && !allowedGroupIds.length) {
-    return NextResponse.json({ ok: false, error: "ingestion_group_allowlist_unconfigured" }, { status: 503 });
-  }
-  if (allowedGroupIds.length) {
-    for (const message of messages) {
-      const groupId = message && typeof message === "object" ? (message as { groupId?: string }).groupId : "";
-      if (!groupId || !allowedGroupIds.includes(groupId)) {
-        return NextResponse.json({ ok: false, error: "group_not_authorized" }, { status: 403 });
-      }
+  // Trusted worker messages must still come from the verified supplier group
+  // registry. Exact JIDs override the temporary exact-name fallback once the
+  // worker has reported them through Telegram /channels.
+  for (const message of messages) {
+    const source = message as { groupId?: string; groupName?: string };
+    if (!isApprovedSupplierGroup(source.groupId, source.groupName)) {
+      return NextResponse.json({ ok: false, error: "group_not_authorized" }, { status: 403 });
     }
   }
 

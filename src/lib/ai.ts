@@ -67,7 +67,7 @@ const CATEGORY_RULES: Array<{ slug: string; words: string[] }> = [
   { slug: "handbags", words: ["bag", "purse", "handbag", "clutch", "tote", "sling", "backpack", "wallet"] },
   { slug: "footwear", words: ["shoe", "shoes", "sneaker", "loafer", "sandal", "slipper", "boot", "heel", "footwear"] },
   { slug: "sunglasses", words: ["sunglass", "sunglasses", "shades", "eyewear", "goggle", "aviator", "wayfarer"] },
-  { slug: "apparel", words: ["shirt", "tshirt", "t-shirt", "hoodie", "jacket", "jeans", "trouser", "kurta", "dress", "apparel", "wear"] },
+  { slug: "apparel", words: ["shirt", "tshirt", "t-shirt", "hoodie", "jacket", "jeans", "trouser", "kurta", "dress", "apparel", "wear", "mens", "men's", "menswear"] },
   { slug: "perfumes", words: ["perfume", "perfumes", "fragrance", "attar", "oud", "cologne", "edt", "edp", "parfum", "scent"] },
 ];
 

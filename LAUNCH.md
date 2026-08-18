@@ -206,7 +206,7 @@ fly secrets set \
   SUPABASE_SERVICE_ROLE_KEY="$SUPABASE_SERVICE_ROLE_KEY" \
   SUPABASE_BUCKET="$SUPABASE_BUCKET" \
   SUPABASE_VIDEO_BUCKET="${SUPABASE_VIDEO_BUCKET:-product-media}"
-# Required production boundary: comma-separated supplier group JIDs.
+# Recommended stronger boundary after Telegram /channels reveals real JIDs.
 # fly secrets set WA_GROUP_IDS="$WA_GROUP_IDS"
 
 # 7c. Deploy

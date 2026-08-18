@@ -16,6 +16,7 @@ import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectC
 import { isAutoUploadEnabled } from "@/lib/telegram";
 import { uploadsPermitted } from "@/lib/subscription";
 import { classifyMessage, applyResolution } from "@/lib/reconcile";
+import { categoryForApprovedSupplierGroup, isApprovedSupplierGroup } from "@/lib/supplier-groups";
 
 export type RawMessage = {
   messageId: string;
@@ -45,10 +46,6 @@ const sha = (v: string) => crypto.createHash("sha256").update(v).digest("hex");
 
 const normalizeCaption = (c: string) =>
   c.toLowerCase().replace(/(?:₹|rs\.?|inr)\s*[0-9,]+/g, "").replace(/[^a-z0-9]+/g, " ").trim();
-
-/** Auto-publish gate. Only genuinely ambiguous items reach a human. */
-const PUBLISH_QUALITY_FLOOR = 55;
-const PUBLISH_CONFIDENCE_FLOOR = 0.6;
 
 async function uniqueSlug(base: string): Promise<string> {
   const root = slugify(base) || `product-${Date.now()}`;
@@ -115,16 +112,17 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   if (!mfr && msg.groupName) {
     mfr = (await db.select().from(manufacturers).where(eq(manufacturers.sourceGroupName, msg.groupName)).limit(1))[0];
   }
-  // Self-registration. Supplier groups are created and renamed constantly; a
-  // hand-maintained mapping file drifts and silently sends everything to
-  // manual review. Observed live: 5 of 6 real supplier groups were unmapped,
-  // including a 1,463-member footwear group.
-  //
-  // A group with a usable JID is registered automatically and its category is
-  // inferred from the subject ("Smart Collections_Watches" -> watches). An
-  // operator can still override the category from the Telegram admin bot.
+  // Self-registration binds a verified supplier group to its real JID on the
+  // first incoming post. Exact approved group names provide the bootstrap
+  // boundary; the resulting JID becomes the durable manufacturer binding.
+  // Dedicated names supply a deterministic category, while the premium/luxury
+  // group classifies from its actual product caption. Operators may refine a
+  // default category later without blocking publication.
   if (!mfr && msg.groupId) {
-    const inferred = detectCategory("", msg.groupName ?? null, null);
+    const configuredCategory = categoryForApprovedSupplierGroup(msg.groupId, msg.groupName);
+    const inferred = configuredCategory
+      ? { slug: configuredCategory, confidence: 1 }
+      : detectCategory("", msg.groupName ?? null, null);
     const name = (msg.groupName || msg.groupId).slice(0, 80);
     const [cat] = inferred.confidence > 0
       ? await db.select({ id: categories.id }).from(categories).where(eq(categories.slug, inferred.slug)).limit(1)
@@ -137,9 +135,10 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         sourceGroupId: msg.groupId,
         sourceGroupName: msg.groupName ?? null,
         defaultCategoryId: cat?.id ?? null,
-        // Auto-registered suppliers stage their first products for review
-        // rather than publishing straight to the storefront.
-        autoPublish: false,
+        // The ingestion API accepts only verified supplier groups. Their real
+        // product posts are public automatically; there is no admin approval
+        // step between a valid supplier message and the storefront.
+        autoPublish: isApprovedSupplierGroup(msg.groupId, msg.groupName),
         status: "active",
       })
       .onConflictDoNothing()
@@ -152,8 +151,8 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         severity: "low",
         title: `New supplier group registered: ${name}`,
         detail: cat
-          ? `Category inferred as "${inferred.slug}". Products stage for review until you enable auto-publish.`
-          : "Category could not be inferred from the group name. Assign one from the admin bot or /admin/suppliers.",
+          ? `Category set to "${inferred.slug}". Valid media posts publish automatically.`
+          : "Category will be inferred from each real product caption. Valid media posts publish automatically.",
         actionUrl: "/admin/suppliers",
       });
     }
@@ -165,10 +164,16 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       kind: "supplier",
       severity: "high",
       title: `Unmapped WhatsApp group: ${msg.groupName ?? msg.groupId ?? "unknown"}`,
-      detail: "A message arrived from a group not bound to any manufacturer. Bind it or the products will never publish.",
+      detail: "A message arrived from a group not bound to any manufacturer. Verify the configured supplier group registry.",
       actionUrl: "/admin/suppliers",
     });
     return { messageId: msg.messageId, stage: "needs_review", reason: "unmapped group" };
+  }
+
+  const approvedSource = isApprovedSupplierGroup(msg.groupId, msg.groupName);
+  if (approvedSource && !mfr.autoPublish) {
+    await db.update(manufacturers).set({ autoPublish: true }).where(eq(manufacturers.id, mfr.id));
+    mfr = { ...mfr, autoPublish: true };
   }
 
   // ---- 2. deduplication (message id, image hash, semantic caption) ----
@@ -280,20 +285,12 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   const pricing = computePricing({ costPrice: enrichment.costPrice });
 
   // ---- 5. publish decision -------------------------------------------
-  // Two independent gates before anything reaches the storefront:
-  //   1. the operator's manual switch (/upload off)
-  //   2. a live subscription
-  // Either one closed stages the product for review instead of publishing it.
-  // Nothing already published is ever touched, so customers see no difference.
+  // A verified supplier group is an operational source, not a moderation
+  // queue. Valid media with a usable selling price publishes immediately.
+  // The incident pause and subscription gates remain hard operational stops.
   const [manualOn, subscription] = await Promise.all([isAutoUploadEnabled(), uploadsPermitted()]);
   const uploadsOn = manualOn && subscription.permitted;
-  const autoOk =
-    uploadsOn &&
-    mfr.autoPublish &&
-    enrichment.qualityScore >= PUBLISH_QUALITY_FLOOR &&
-    enrichment.confidence >= PUBLISH_CONFIDENCE_FLOOR &&
-    Boolean(msg.imageUrl) &&
-    pricing.price > 0;
+  const autoOk = uploadsOn && mfr.autoPublish && Boolean(msg.imageUrl) && pricing.price > 0;
 
   const status = autoOk ? "published" : "pending_review";
   const slug = await uniqueSlug(`${enrichment.title}-${enrichment.color ?? ""}`);
@@ -403,14 +400,14 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       template: "moderation_needed",
       payload: {
         ...notificationPayload,
-        reason: enrichment.qualityScore < 55 ? "quality below threshold" : "confidence below threshold",
+        reason: !uploadsOn ? "automatic publishing is paused" : !msg.imageUrl ? "product media is required" : "usable product price was not extracted",
       },
     });
     await db.insert(opsTasks).values({
       kind: "moderation",
       severity: enrichment.qualityScore < 35 ? "high" : "medium",
       title: `Review: ${enrichment.title}`,
-      detail: `Quality ${enrichment.qualityScore}/100 · confidence ${(enrichment.confidence * 100).toFixed(0)}%${msg.imageUrl ? "" : " · no image"}. Auto-publish thresholds not met.`,
+      detail: `Automatic publishing is blocked: ${!uploadsOn ? "uploads are paused" : !msg.imageUrl ? "no product media" : "no usable selling price"}. Quality ${enrichment.qualityScore}/100 · confidence ${(enrichment.confidence * 100).toFixed(0)}%.`,
       entityType: "product",
       entityId: created.id,
       actionUrl: `/admin/moderation`,

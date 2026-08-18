@@ -1,8 +1,21 @@
 {
-  "120363099626395319@g.us": "watches",
-  "120363088478963131@g.us": "sunglasses",
-  "120363087780324162@g.us": "bags",
-  "120363047486726341@g.us": "shoes",
-  "120363086022588990@g.us": "perfumes",
-  "120363084957889605@g.us": "clothing"
+  "jids": {
+    "120363099626395319@g.us": "watches",
+    "120363088478963131@g.us": "sunglasses",
+    "120363087780324162@g.us": "bags",
+    "120363047486726341@g.us": "shoes",
+    "120363086022588990@g.us": "perfumes",
+    "120363084957889605@g.us": "clothing"
+  },
+  "names": [
+    { "name": "Smart Collections 12@ Premium/Luxury", "category": null },
+    { "name": "Shetty_Silks_ (Mens Section)", "category": "apparel" },
+    { "name": "Smart Collections_Clothing", "category": "apparel" },
+    { "name": "Smart Collections_Perfumes", "category": "perfumes" },
+    { "name": "SHETTY SILKS SHOES Reseller's Grp", "category": "footwear" },
+    { "name": "Smart Collections_Premium Bags", "category": "handbags" },
+    { "name": "Smart Collections_Sunglasses", "category": "sunglasses" },
+    { "name": "Smart Collections_Watches", "category": "watches" },
+    { "name": "Smart Collections_Footwear", "category": "footwear" }
+  ]
 }

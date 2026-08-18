@@ -129,7 +129,7 @@ doctor() {
   printf "\n%s\n" "${BOLD}WhatsApp worker link${RESET}"
   check "WA_WORKER_URL"               "${WA_WORKER_URL:-}"               "Telegram /worker and /qr have nothing to call"
   check "WA_WORKER_TOKEN"             "${WA_WORKER_TOKEN:-}"             "worker control endpoints will refuse Telegram commands"
-  check "WA_GROUP_IDS"                  "${WA_GROUP_IDS:-}"                  "REQUIRED in production — no supplier-group allow-list"
+  check "WA_GROUP_IDS"                  "${WA_GROUP_IDS:-}"                  "recommended — exact JID override after Telegram /channels discovery"
 
   printf "\n%s\n" "${BOLD}Supabase (DB is above; this is storage)${RESET}"
   check "SUPABASE_URL"                "${SUPABASE_URL:-}"                "worker cannot host product images or persist WA session"

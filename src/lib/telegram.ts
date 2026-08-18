@@ -240,7 +240,7 @@ async function listMappableChannels(): Promise<Reply> {
       "🏷 *Map a channel to a category*",
       "",
       "*Step 1 of 2* — pick the channel.",
-      unmapped ? `\n⚠️ ${unmapped} channel${unmapped === 1 ? "" : "s"} still without a category. Products from them stage for review.` : "",
+       unmapped ? `\n⚠️ ${unmapped} channel${unmapped === 1 ? "" : "s"} still without a default category. Product captions are categorized automatically; map one for more consistent merchandising.` : "",
     ].filter(Boolean).join("\n"),
     keyboard: [
       ...rows.map((r) => [
@@ -580,13 +580,12 @@ export async function runCommand(command: string, args: string[], _chatId: strin
         sourceGroupId: jid,
         sourceGroupName: name,
         defaultCategoryId: cat?.id ?? null,
-        autoPublish: false,
+        autoPublish: true,
         status: "active",
       }).onConflictDoNothing();
 
-      // Setup must never end unmapped: an unmapped channel ingests into
-      // manual review forever and looks like the pipeline is broken. When the
-      // subject yields no category, go straight to step 2 instead of finishing.
+      // A default category keeps merchandising consistent. Without one, valid
+      // supplier captions still classify and publish automatically.
       if (!cat) return listCategoriesFor(shortId);
 
       return {
@@ -594,7 +593,7 @@ export async function runCommand(command: string, args: string[], _chatId: strin
           `✅ *${name}* connected`,
           "",
           `🏷 Category: *${cat.name}* _(inferred from the group name)_`,
-          "📦 New products stage for review until you enable auto-publish.",
+          "📦 Valid media products publish automatically.",
         ].join("\n"),
         keyboard: [
           [{ text: "🏷 Change category", callback_data: `cpick:${shortId}` }],
