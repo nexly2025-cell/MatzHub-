@@ -11,6 +11,7 @@ WORKER_DIR="$REPO_DIR/worker"
 VERCEL_PROJECT_ID="${VERCEL_PROJECT_ID:-prj_ZMCtO7b0yi4Vr0zKmPYJSuBw3AaQ}"
 SESSION_VOLUME="${WA_SESSION_VOLUME:-wa-session}"
 SESSION_DIR="/data/.wa-session"
+HOST_PORT="${WA_WORKER_HOST_PORT:-8787}"
 AUTHORITATIVE_JIDS="120363337186642655@g.us,120363136590856235@g.us,120363084957889605@g.us,120363086598656877@g.us,120363169458002169@g.us,120363088334492923@g.us,120363089280152472@g.us,120363103975055296@g.us,120363027163825724@g.us"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
@@ -110,7 +111,7 @@ chmod 600 .env
 chmod +x deploy-worker.sh
 
 info "DEPLOY WORKER"
-sg docker -c "cd '$WORKER_DIR' && ./deploy-worker.sh deploy"
+sg docker -c "cd '$WORKER_DIR' && WA_WORKER_HOST_PORT='$HOST_PORT' ./deploy-worker.sh deploy"
 
 # Optional existing Cloudflare Tunnel. The token must already be created in
 # Cloudflare Zero Trust with a public hostname routing to localhost:8787.
@@ -157,6 +158,6 @@ fi
 
 info "FINAL STATUS"
 sg docker -c "cd '$WORKER_DIR' && ./deploy-worker.sh status" || true
-curl -sS --max-time 10 http://127.0.0.1:8787/health || true
+curl -sS --max-time 10 "http://127.0.0.1:${HOST_PORT}/health" || true
 echo
 sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

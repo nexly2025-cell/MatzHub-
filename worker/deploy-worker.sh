@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPOSITORY_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 ENV_FILE="${WA_WORKER_ENV_FILE:-$SCRIPT_DIR/.env}"
 SESSION_VOLUME="${WA_SESSION_VOLUME:-wa-session}"
-HOST_PORT="${WA_WORKER_HOST_PORT:-8081}"
+HOST_PORT="${WA_WORKER_HOST_PORT:-}"
 
 # Preserve compatibility with the existing production container name.
 if [[ -n "${WA_WORKER_CONTAINER:-}" ]]; then
@@ -21,6 +21,13 @@ else
 fi
 PREVIOUS_CONTAINER="${CONTAINER_NAME}-previous"
 IMAGE="${WA_WORKER_IMAGE:-matzhub-worker}"
+
+# Preserve an existing reverse-proxy/tunnel port mapping unless the operator
+# explicitly overrides WA_WORKER_HOST_PORT. The legacy E2 worker uses 8787.
+if [[ -z "$HOST_PORT" ]] && docker container inspect "$CONTAINER_NAME" >/dev/null 2>&1; then
+  HOST_PORT="$(docker port "$CONTAINER_NAME" 8081/tcp 2>/dev/null | sed -n '1s/.*://p')"
+fi
+HOST_PORT="${HOST_PORT:-8787}"
 
 fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
 require_docker() {
