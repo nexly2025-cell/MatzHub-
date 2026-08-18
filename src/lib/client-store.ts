@@ -1,6 +1,8 @@
 "use client";
 
 
+import { FREE_DELIVERY_OVER, DELIVERY_FEE, MAX_QTY_PER_LINE } from "@/lib/utils";
+
 const WISH_KEY = "mh_wish_v1";
 const RECENT_KEY = "mh_recent_v1";
 const AID_KEY = "mh_aid";
@@ -77,6 +79,35 @@ export function pushRecent(productId: string) {
 }
 
 /* ---------- shopping cart ---------- */
+
+// Defined in utils so the server-side order validator can share them.
+export { FREE_DELIVERY_OVER, DELIVERY_FEE, MAX_QTY_PER_LINE } from "@/lib/utils";
+
+export interface CartTotals {
+  count: number;
+  subtotal: number;
+  mrpTotal: number;
+  savings: number;
+  delivery: number;
+  total: number;
+}
+
+/** Pure, side-effect free. Unit-tested in src/lib/__tests__/cart-order.test.ts. */
+export function cartTotals(cart: CartItem[]): CartTotals {
+  const count = cart.reduce((n, i) => n + i.qty, 0);
+  const subtotal = cart.reduce((n, i) => n + i.price * i.qty, 0);
+  const mrpTotal = cart.reduce((n, i) => n + (i.mrp || i.price) * i.qty, 0);
+  const delivery = subtotal === 0 || subtotal >= FREE_DELIVERY_OVER ? 0 : DELIVERY_FEE;
+  return {
+    count,
+    subtotal,
+    mrpTotal,
+    savings: Math.max(0, mrpTotal - subtotal),
+    delivery,
+    total: subtotal + delivery,
+  };
+}
+
 export const getCart = () => read<CartItem[]>(CART_KEY, []);
 
 export function addToCart(item: CartItem) {
@@ -85,9 +116,9 @@ export function addToCart(item: CartItem) {
     (i) => i.id === item.id && i.variant === item.variant
   );
   if (existing) {
-    existing.qty += item.qty;
+    existing.qty = Math.min(MAX_QTY_PER_LINE, existing.qty + item.qty);
   } else {
-    cart.push(item);
+    cart.push({ ...item, qty: Math.min(MAX_QTY_PER_LINE, Math.max(1, item.qty)) });
   }
   write(CART_KEY, cart);
 }
@@ -98,9 +129,62 @@ export function updateCartQty(id: string, variant: string | undefined, qty: numb
     cart = cart.filter((i) => !(i.id === id && i.variant === variant));
   } else {
     const item = cart.find((i) => i.id === id && i.variant === variant);
-    if (item) item.qty = qty;
+    if (item) item.qty = Math.min(MAX_QTY_PER_LINE, qty);
   }
   write(CART_KEY, cart);
+}
+
+/**
+ * Reconciles the locally-stored cart against the live catalogue.
+ *
+ * localStorage can hold a line for weeks. Prices move, products get delisted
+ * and stock runs out, so the cart must never quote a stale number or hand the
+ * customer an order for something that cannot be sold. Lines whose product no
+ * longer resolves are dropped; surviving lines take the current price/title/
+ * image. Returns what changed so the UI can say so plainly.
+ *
+ * Network failure is non-fatal — the cart keeps working offline.
+ */
+export async function revalidateCart(): Promise<{ removed: string[]; repriced: string[]; soldOut: string[] }> {
+  const empty = { removed: [], repriced: [], soldOut: [] };
+  const cart = getCart();
+  if (!cart.length) return empty;
+
+  const ids = [...new Set(cart.map((i) => i.id))];
+  let live: Array<{ id: string; title: string; price: number; mrp: number; heroImage: string; availability: string }>;
+  try {
+    const res = await fetch(`/api/products/by-ids?ids=${encodeURIComponent(ids.join(","))}`);
+    if (!res.ok) return empty;
+    live = ((await res.json()) as { items?: typeof live }).items ?? [];
+  } catch {
+    return empty;
+  }
+  // A completely empty response usually means the request was blocked, not
+  // that the whole catalogue vanished. Never wipe a cart on that signal.
+  if (!live.length) return empty;
+
+  const by = new Map(live.map((p) => [p.id, p]));
+  const removed: string[] = [];
+  const repriced: string[] = [];
+  const soldOut: string[] = [];
+
+  const next: CartItem[] = [];
+  for (const line of cart) {
+    const p = by.get(line.id);
+    if (!p) {
+      removed.push(line.title);
+      continue;
+    }
+    if (p.availability === "out_of_stock") {
+      soldOut.push(p.title);
+      continue;
+    }
+    if (p.price !== line.price) repriced.push(p.title);
+    next.push({ ...line, title: p.title, image: p.heroImage || line.image, price: p.price, mrp: p.mrp });
+  }
+
+  if (removed.length || repriced.length || soldOut.length) write(CART_KEY, next);
+  return { removed, repriced, soldOut };
 }
 
 export function removeFromCart(id: string, variant: string | undefined) {

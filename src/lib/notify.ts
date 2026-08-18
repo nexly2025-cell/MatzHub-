@@ -27,7 +27,7 @@ export function render(template: string, p: Payload): string {
         `Thanks for shopping with MatzHub. Total ${inr(n(p, "total"))}.`,
         `Your items ship from the curated source within ≤5 hours.`,
         ``,
-        `Track it here: ${SITE.url}/order/${s(p, "orderNo")}`,
+        `Track it here: ${SITE.url}/track?no=${s(p, "orderNo")}`,
         ``,
         `Reply to this message any time if you need help.`,
       ].join("\n");
@@ -69,7 +69,7 @@ export function render(template: string, p: Payload): string {
         ``,
         `${inr(n(p, "total"))} confirmed. Your order is now first in the dispatch queue.`,
         ``,
-        `${SITE.url}/order/${s(p, "orderNo")}`,
+        `${SITE.url}/track?no=${s(p, "orderNo")}`,
       ].join("\n");
 
     case "order_status_update": {
@@ -82,7 +82,7 @@ export function render(template: string, p: Payload): string {
         cancelled: "cancelled. If you paid, the refund is being processed.",
         returned: "marked as returned and the replacement or refund is in motion.",
       };
-      return [`*Order ${s(p, "orderNo")}*`, "", `Your order is ${human[s(p, "status")] ?? s(p, "status")}`, track, "", `${SITE.url}/order/${s(p, "orderNo")}`].filter(Boolean).join("\n");
+      return [`*Order ${s(p, "orderNo")}*`, "", `Your order is ${human[s(p, "status")] ?? s(p, "status")}`, track, "", `${SITE.url}/track?no=${s(p, "orderNo")}`].filter(Boolean).join("\n");
     }
 
     case "moderation_needed":

@@ -23,6 +23,16 @@ export const SITE = {
   pincode: "572101",
 };
 
+/**
+ * Delivery + cart rules. ONE definition, shared by the client cart, the
+ * WhatsApp order message and the server-side order validator, so a customer
+ * can never be quoted one total in the UI and charged another in the record.
+ */
+export const FREE_DELIVERY_OVER = 999;
+export const DELIVERY_FEE = 59;
+/** Per-line ceiling, enforced client-side and re-enforced on the server. */
+export const MAX_QTY_PER_LINE = 10;
+
 export const inr = (n: number) => `₹${new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(n)}`;
 
 export const savePercent = (mrp: number, price: number) =>
