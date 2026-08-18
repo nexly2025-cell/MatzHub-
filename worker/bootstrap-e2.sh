@@ -110,7 +110,11 @@ chmod 600 .env
 chmod +x deploy-worker.sh
 
 info "DEPLOY WORKER"
-sg docker -c "cd '$WORKER_DIR' && ./deploy-worker.sh deploy"
+# Pin the published host port. deploy-worker.sh defaults to 8081, but the
+# existing production container and the Cloudflare Tunnel hostname both use
+# 8787, so the final health probe below would hit a closed port.
+export WA_WORKER_HOST_PORT="${WA_WORKER_HOST_PORT:-8787}"
+sg docker -c "cd '$WORKER_DIR' && WA_WORKER_HOST_PORT='$WA_WORKER_HOST_PORT' ./deploy-worker.sh deploy"
 
 # Optional existing Cloudflare Tunnel. The token must already be created in
 # Cloudflare Zero Trust with a public hostname routing to localhost:8787.
@@ -156,7 +160,7 @@ else
 fi
 
 info "FINAL STATUS"
-sg docker -c "cd '$WORKER_DIR' && ./deploy-worker.sh status" || true
-curl -sS --max-time 10 http://127.0.0.1:8787/health || true
+sg docker -c "cd '$WORKER_DIR' && WA_WORKER_HOST_PORT='$WA_WORKER_HOST_PORT' ./deploy-worker.sh status" || true
+curl -sS --max-time 10 "http://127.0.0.1:${WA_WORKER_HOST_PORT}/health" || true
 echo
 sudo docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}'

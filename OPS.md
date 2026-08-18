@@ -253,11 +253,11 @@ Check state any time with `/payment` in the admin bot.
 - VM + Docker (canonical). From `~/MatzHub-/worker`:
   | Command             | Does                                              |
   | ------------------- | ------------------------------------------------- |
-  | `./wa.sh status`    | container + WhatsApp state + memory + session vol  |
-  | `./wa.sh health`    | raw `/health` JSON                                 |
-  | `./wa.sh logs`      | follow logs                                        |
-  | `./wa.sh restart`   | recycle container (session preserved)              |
-  | `./wa.sh qr`        | write the current pairing QR to `qr.png`           |
+  | `./deploy-worker.sh status`  | container + session volume + WhatsApp state |
+  | `./deploy-worker.sh health`  | raw `/health` JSON                          |
+  | `./deploy-worker.sh logs`    | recent logs                                 |
+  | `./deploy-worker.sh restart` | recycle container (session preserved)       |
+  | `./deploy-worker.sh qr`      | write the pairing QR to `worker/qr.png`     |
   | `./deploy-worker.sh`| pull → build → replace → health-check → rollback   |
 
   Never run `docker volume rm wa-session` — that volume *is* the WhatsApp
