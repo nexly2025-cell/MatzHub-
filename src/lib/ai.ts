@@ -197,6 +197,12 @@ function extractNumbers(caption: string): number[] {
     /\bmrp\b\s*[:\-]?\s*([0-9][0-9,]{1,7})/gi,
     /\b(?:cost|price)\b\s*[:\-]?\s*([0-9][0-9,]{1,7})/gi,
     /\bonly\b\s*([0-9][0-9,]{1,7})/gi,
+    // "900 only", "1,250/- only" — the number comes FIRST. This is how Indian
+    // supplier groups actually write a price, and it was the one common form
+    // no pattern matched. A caption like "Aviator sunglasses UV400\n900 only"
+    // therefore yielded no figure at all, costPrice fell to 0, and the product
+    // published at the Math.max(1, ...) floor of Rs 1.
+    /\b([0-9][0-9,]{1,7})\s*(?:\/-)?\s*only\b/gi,
     /([0-9][0-9,]{2,7})\s*\/-/gi,
     /\b([0-9][0-9,]{2,7})\s*(?:rs|inr)\b/gi,
     /\b([0-9][0-9,]{2,7})\s*(?:per piece|per pc|pcs|set)\b/gi,
@@ -261,17 +267,36 @@ function detectVariants(caption: string): Array<{ label: string; axis: "size" | 
 }
 
 function buildTitle(caption: string, category: string, brand: string | null, color: string | null): string {
-  const firstLine = caption.split(/\r?\n/).map((l) => l.trim()).find((l) => l.length > 3) || "";
-  const cleaned = firstLine
-    .replace(/(?:₹|rs\.?|inr)\s*[0-9,]+/gi, " ")
-    .replace(/\b[0-9,]+\s*\/-/g, " ")
-    .replace(/\bmrp\b[^a-z]*[0-9,]*/gi, " ")
-    .replace(/\bsizes?\s*[:\-]?\s*\d+\s*(?:to|-|–)\s*\d+/gi, " ")
-    .replace(/[*_~`#/\\]/g, " ")
-    .replace(/\b(moq|dm|whatsapp|order now|book now|available|new arrival|new stock|limited stock|arrived|now)\b/gi, " ")
-    .replace(/[.,;:]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+  // Use the most DESCRIPTIVE line, not simply the first one.
+  //
+  // Supplier posts routinely open with a filler line — "New stock", "Fresh
+  // arrival", "Good morning" — and put the actual product on line two. Taking
+  // the first line meant that whole caption reduced to nothing usable and the
+  // title fell back to the bare category noun, so real listings went live
+  // titled "Sunglass" or "Fresh Arrival" instead of the product.
+  const clean = (line: string) =>
+    line
+      .replace(/(?:₹|rs\.?|inr)\s*[0-9,]+/gi, " ")
+      .replace(/\b[0-9,]+\s*\/-/g, " ")
+      .replace(/\bmrp\b[^a-z]*[0-9,]*/gi, " ")
+      .replace(/\bsizes?\s*[:\-]?\s*\d+\s*(?:to|-|–)\s*\d+/gi, " ")
+      .replace(/[*_~`#/\\]/g, " ")
+      .replace(/\b(moq|dm|whatsapp|order now|book now|available|new arrival|new stock|limited stock|arrived|now)\b/gi, " ")
+      .replace(/[.,;:]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+
+  const usableWords = (line: string) =>
+    clean(line)
+      .split(/\s+/)
+      .filter((w) => w.length > 1 && !STOPWORDS.has(w.toLowerCase())).length;
+
+  const lines = caption.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 3);
+  // Ties keep the earliest line, preserving the previous behaviour when the
+  // first line is already the descriptive one.
+  const bestLine = lines.reduce((best, line) => (usableWords(line) > usableWords(best) ? line : best), lines[0] ?? "");
+
+  const cleaned = clean(bestLine);
 
   // Trailing connector/qualifier words read as truncation artefacts in a title.
   const DANGLING = new Set(["size", "sizes", "men", "and", "with", "for", "in", "to", "pcs", "piece", "quality"]);

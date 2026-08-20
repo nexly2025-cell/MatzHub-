@@ -315,7 +315,13 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   const [manualOn, subscription] = await Promise.all([isAutoUploadEnabled(), uploadsPermitted()]);
   const uploadsOn = manualOn && subscription.permitted;
   const heroImage = msg.imageUrls?.[0] ?? msg.imageUrl ?? "";
-  const autoOk = uploadsOn && mfr.autoPublish && Boolean(heroImage) && pricing.price > 0;
+  // `pricing.price > 0` is NOT a real check: computePricing floors both price
+  // and mrp at Math.max(1, ...), so a caption whose price could not be parsed
+  // yields costPrice 0 and still satisfies it — publishing a live, orderable
+  // product at Rs 1. Gate on the parsed cost instead, which is only non-zero
+  // when a genuine rupee figure was found in the supplier's message.
+  const hasRealPrice = enrichment.costPrice > 0 && pricing.price > 1;
+  const autoOk = uploadsOn && mfr.autoPublish && Boolean(heroImage) && hasRealPrice;
 
   const status = autoOk ? "published" : "pending_review";
   const slug = await uniqueSlug(`${enrichment.title}-${enrichment.color ?? ""}`);

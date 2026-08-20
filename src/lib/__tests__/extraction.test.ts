@@ -73,3 +73,66 @@ describe("category alias normalization", () => {
     expect(normalizeCategoryAlias("watches")).toBe("watches");
   });
 });
+
+/**
+ * Price parsing for real supplier phrasing.
+ *
+ * Indian supplier groups overwhelmingly write the figure BEFORE the word
+ * "only" — "900 only", "1,250/- only". Every existing pattern expected the
+ * word first ("only 640"), so these captions yielded no figure at all,
+ * costPrice fell to 0, and computePricing's Math.max(1, ...) floor published
+ * a live, orderable product priced at Rs 1.
+ */
+describe("supplier price phrasing", () => {
+  it("reads a price written as '<amount> only'", async () => {
+    const { enrichProduct } = await import("@/lib/ai");
+    const e = await enrichProduct({
+      caption: "New stock\nAviator sunglasses UV400 polarized\nMetal frame gradient lens\n900 only",
+      groupName: "Smart Collections_Sunglasses",
+    });
+    expect(e.costPrice).toBe(900);
+  });
+
+  it("handles '1,250/- only' and still supports 'only 640'", async () => {
+    const { enrichProduct } = await import("@/lib/ai");
+    const a = await enrichProduct({ caption: "Leather handbag tan\n1,250/- only", groupName: "Smart Collections_Premium Bags" });
+    expect(a.costPrice).toBe(1250);
+    const b = await enrichProduct({ caption: "Running sneakers\nonly 640", groupName: "Smart Collections_Footwear" });
+    expect(b.costPrice).toBe(640);
+  });
+
+  it("does not mistake a spec number for a price", async () => {
+    const { enrichProduct } = await import("@/lib/ai");
+    // UV400 is a lens rating, not Rs 400.
+    const e = await enrichProduct({ caption: "Aviator sunglasses UV400 polarized", groupName: "Smart Collections_Sunglasses" });
+    expect(e.costPrice).toBe(0);
+  });
+
+  it("never derives a sellable price from an unparsed caption", async () => {
+    const { computePricing } = await import("@/lib/ai");
+    // The Rs 1 floor is the landmine: it satisfies a naive `price > 0` gate.
+    expect(computePricing({ costPrice: 0 }).price).toBe(1);
+    expect(computePricing({ costPrice: 900 }).price).toBeGreaterThan(900);
+  });
+});
+
+describe("title uses the descriptive line", () => {
+  it("skips a filler opening line", async () => {
+    const { enrichProduct } = await import("@/lib/ai");
+    const e = await enrichProduct({
+      caption: "New stock\nAviator sunglasses UV400 polarized\n900 only",
+      groupName: "Smart Collections_Sunglasses",
+    });
+    expect(e.title.toLowerCase()).toContain("aviator");
+    expect(e.title.toLowerCase()).not.toBe("sunglass");
+  });
+
+  it("keeps the first line when it is already descriptive", async () => {
+    const { enrichProduct } = await import("@/lib/ai");
+    const e = await enrichProduct({
+      caption: "Leather shoulder handbag tan\n1250 only",
+      groupName: "Smart Collections_Premium Bags",
+    });
+    expect(e.title.toLowerCase()).toContain("handbag");
+  });
+});
