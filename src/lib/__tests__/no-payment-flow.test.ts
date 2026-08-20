@@ -117,3 +117,41 @@ describe("an order cannot be duplicated", () => {
     expect(schema).toContain('uniqueIndex("orders_submission_key_uidx")');
   });
 });
+
+/**
+ * A product with no parsed price must never reach the storefront.
+ *
+ * computePricing floors price and mrp at Math.max(1, ...), so an unparsed
+ * caption produced a Rs 1 product that satisfied the old `pricing.price > 0`
+ * publish gate and went live fully orderable.
+ */
+describe("publish gate requires a genuinely parsed price", () => {
+  it("gates on the parsed cost, not the floored price", async () => {
+    const ingest = await readFile("src/lib/ingest.ts", "utf8");
+    expect(ingest).toContain("enrichment.costPrice > 0");
+    expect(ingest).toContain("hasRealPrice");
+    // The naive check must be gone.
+    expect(ingest).not.toMatch(/autoOk\s*=\s*uploadsOn[^;]*pricing\.price\s*>\s*0/);
+  });
+
+  it("still requires an image before publishing", async () => {
+    const ingest = await readFile("src/lib/ingest.ts", "utf8");
+    expect(ingest).toMatch(/autoOk\s*=\s*uploadsOn[\s\S]{0,120}Boolean\(heroImage\)/);
+  });
+});
+
+describe("concurrent order submission returns the same order", () => {
+  it("detects a unique violation wrapped by the driver", async () => {
+    const orders = await readFile("src/lib/orders.ts", "utf8");
+    // Drizzle nests the pg SQLSTATE under .cause; a top-level-only check made
+    // a double-tap return HTTP 500 for an order that had actually been created.
+    expect(orders).toContain("cause");
+    expect(orders).toMatch(/depth\s*<\s*5|cursor\s*=\s*\(cursor/);
+    expect(orders).not.toMatch(/return typeof error === "object" && error !== null && "code" in error/);
+  });
+
+  it("re-checks for the winning row before reporting failure", async () => {
+    const orders = await readFile("src/lib/orders.ts", "utf8");
+    expect(orders).toMatch(/for \(let attempt = 0; attempt < 5/);
+  });
+});

@@ -103,8 +103,23 @@ export function shippingFor(subtotal: number) {
   return subtotal >= 999 ? 0 : 59;
 }
 
-function uniqueViolation(error: unknown) {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code?: string }).code === "23505";
+/**
+ * Postgres unique-violation detector.
+ *
+ * Drizzle wraps driver errors, so the pg SQLSTATE lives on `error.cause` (and
+ * can nest further) rather than on the thrown object. Checking only the top
+ * level meant a genuine 23505 from the submission_key index was never
+ * recognised: a double-tapped Place Order returned HTTP 500 "We could not
+ * submit your order" even though the first request had succeeded, so the
+ * customer saw a failure for an order that actually existed.
+ */
+function uniqueViolation(error: unknown): boolean {
+  for (let cursor: unknown = error, depth = 0; cursor && depth < 5; depth += 1) {
+    if (typeof cursor !== "object") break;
+    if ((cursor as { code?: string }).code === "23505") return true;
+    cursor = (cursor as { cause?: unknown }).cause;
+  }
+  return false;
 }
 
 export type CreatedOrder = {
@@ -307,10 +322,16 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
   } catch (error) {
     if (error instanceof OrderRequestError) throw error;
     if (uniqueViolation(error)) {
-      const duplicate = await findExisting();
-      if (duplicate) {
-        log.info("ORDER_DUPLICATE", { orderNo: duplicate.orderNo, reason: "unique_constraint" });
-        return duplicate;
+      // The winning transaction may still be committing when we get here, so
+      // a single lookup can legitimately miss. Re-check briefly rather than
+      // reporting a failure for an order that is about to exist.
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        const duplicate = await findExisting();
+        if (duplicate) {
+          log.info("ORDER_DUPLICATE", { orderNo: duplicate.orderNo, reason: "unique_constraint" });
+          return duplicate;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 120));
       }
     }
     throw new OrderRequestError("We could not submit your order. Please try again.", 500, "order_failed");
