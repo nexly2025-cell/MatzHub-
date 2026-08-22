@@ -78,11 +78,18 @@ async function watchdogJob() {
         await db.insert(opsTasks).values({
           kind: "automation_failure", severity: "high",
           title: `Job "${job}" is overdue`,
-          detail: `SLA is ${slaMin} min; last run ${last ? relativeTime(last) : "never"}. Check the scheduler / vercel.json.`,
+          detail: `SLA is ${slaMin} min; last run ${last ? relativeTime(last) : "never"}. Check the persistent worker scheduler.`,
           actionUrl: "/admin/automation",
         });
         alerts += 1;
       }
+    } else {
+      // Monitoring must recover when the underlying scheduled job recovers.
+      // Leaving resolved jobs open kept /api/monitoring permanently degraded.
+      await db
+        .update(opsTasks)
+        .set({ status: "resolved", resolvedAt: new Date() })
+        .where(and(eq(opsTasks.kind, "automation_failure"), eq(opsTasks.status, "open"), eq(opsTasks.title, `Job "${job}" is overdue`)));
     }
   }
   return { checked: Object.keys(SLAS).length, alerts };
@@ -345,6 +352,12 @@ async function run(job: string) {
     await db.update(automationRuns)
       .set({ status: "ok", detail, durationMs: Date.now() - t0, finishedAt: new Date(), processed: Object.values(detail).reduce((a, b) => a + b, 0) })
       .where(eq(automationRuns.id, run.id));
+    // A successful retry closes the matching incident instead of leaving the
+    // operations dashboard permanently red after a transient failure.
+    await db
+      .update(opsTasks)
+      .set({ status: "resolved", resolvedAt: new Date() })
+      .where(and(eq(opsTasks.kind, "automation_failure"), eq(opsTasks.status, "open"), eq(opsTasks.title, `Cron "${job}" failed`)));
     return NextResponse.json({ ok: true, job, detail, durationMs: Date.now() - t0 });
   } catch (e) {
     const error = e instanceof Error ? e.message : "unknown";
