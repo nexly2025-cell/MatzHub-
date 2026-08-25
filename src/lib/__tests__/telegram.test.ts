@@ -93,13 +93,16 @@ describe("job allowlist", () => {
 });
 
 describe("inline keyboards", () => {
-  it("keeps callback_data inside Telegram's 64-byte limit", () => {
+  it("gives every button exactly one action and keeps callback_data inside the 64-byte cap", () => {
     const views = ["m:home", "m:wa", "m:ch", "m:sync"];
     for (const v of views) {
       for (const row of keyboardFor(v)) {
         for (const b of row) {
-          expect(Buffer.byteLength(b.callback_data, "utf8")).toBeLessThanOrEqual(64);
           expect(b.text.length).toBeGreaterThan(0);
+          // Telegram accepts either a callback or a URL, never both, never neither.
+          expect(Boolean(b.callback_data) !== Boolean(b.url)).toBe(true);
+          if (b.callback_data) expect(Buffer.byteLength(b.callback_data, "utf8")).toBeLessThanOrEqual(64);
+          if (b.url) expect(b.url.startsWith("https://")).toBe(true);
         }
       }
     }
@@ -124,18 +127,34 @@ describe("keyboard / router contract", () => {
     for (const v of VIEWS) {
       for (const row of keyboardFor(v)) {
         for (const b of row) {
+          // A URL button needs a real absolute target, nothing else.
+          if (!b.callback_data) {
+            expect(b.url?.startsWith("https://")).toBe(true);
+            continue;
+          }
           const data = b.callback_data;
           if (data.startsWith("m:")) {
             expect(VIEWS).toContain(data);
             continue;
           }
-          // h: entries are copy-this-line hints, not router commands.
+          // h: entries are guided-flow entrances, dispatched by prefix.
           if (data.startsWith("h:")) continue;
           const [cmd] = data.split(" ");
           expect(HANDLED_COMMANDS as readonly string[]).toContain(cmd);
           // Buttons are the admin's interface; none may invoke dev tooling.
           expect(isCommandAllowed(cmd, "admin")).toBe(true);
         }
+      }
+    }
+  });
+
+  it("every guided flow entrance is a real handler, not a dead label", () => {
+    // The admin's channel and reader flows live behind h: buttons; each one
+    // must still be routed, otherwise the menu is decorative.
+    const handled = ["h:add", "h:rm", "h:map", "h:pay", "h:pair"];
+    for (const v of ["m:ch", "m:wa"]) {
+      for (const b of keyboardFor(v).flat()) {
+        if (b.callback_data?.startsWith("h:")) expect(handled).toContain(b.callback_data);
       }
     }
   });
@@ -150,22 +169,30 @@ describe("keyboard / router contract", () => {
 describe("control panel reachability", () => {
   it("puts every runbook operation within two taps of the panel", () => {
     // Reachable = on the home panel, or on a submenu the home panel links to.
-    const home = HOME_KEYBOARD.flat().map((b) => b.callback_data);
-    const reachable = new Set(home);
+    const home = HOME_KEYBOARD.flat().map((b) => b.callback_data).filter((d): d is string => Boolean(d));
+    const reachable = new Set<string>(home);
     for (const d of home) {
-      if (d.startsWith("m:")) for (const b of keyboardFor(d).flat()) reachable.add(b.callback_data);
+      if (d.startsWith("m:")) {
+        for (const b of keyboardFor(d).flat()) if (b.callback_data) reachable.add(b.callback_data);
+      }
     }
-    const cmds = new Set([...reachable].map((d) => d.split(" ")[0]).filter((d) => !d.startsWith("m:") && !d.startsWith("h:")));
+    const cmds = new Set(
+      [...reachable]
+        .map((d) => d.split(" ")[0])
+        .filter((d) => !d.startsWith("m:") && !d.startsWith("h:")),
+    );
     for (const op of ["dashboard", "qr", "worker", "channels", "syncstatus", "sync",
                       "payment", "health", "logs", "restart"]) {
       expect(cmds).toContain(op);
     }
-    // Add / remove / map need an argument, so they surface as guided hints.
+    // Channel and reader management take an argument, so they surface as guided
+    // flow entrances — each must be one tap from the panel.
     const hints = keyboardFor("m:ch").flat().map((b) => b.callback_data);
     expect(hints).toContain("h:add");
     expect(hints).toContain("h:rm");
     expect(hints).toContain("h:map");
     expect(hints).toContain("channel undo");
+    expect(keyboardFor("m:wa").flat().map((b) => b.callback_data)).toContain("h:pair");
   });
 });
 
@@ -244,7 +271,10 @@ describe("guided channel flows", () => {
 describe("developer console keyboard", () => {
   it("exposes only developer commands, never business operations", () => {
     for (const b of DEV_KEYBOARD.flat()) {
-      const cmd = b.callback_data.split(" ")[0];
+      // The developer console is action-only: no link buttons, so every entry
+      // carries a callback that the router must resolve.
+      expect(typeof b.callback_data).toBe("string");
+      const cmd = (b.callback_data ?? "").split(" ")[0];
       expect(HANDLED_COMMANDS as readonly string[]).toContain(cmd);
       // A business action reachable from the dev console would blur the split.
       expect(["qr", "relink", "restart", "channels", "channel", "dashboard", "payment"]).not.toContain(cmd);

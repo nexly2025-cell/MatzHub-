@@ -1,6 +1,6 @@
 import { and, eq, inArray, lt, lte, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { manufacturers, notifications, opsTasks } from "@/db/schema";
+import { manufacturers, notifications, opsTasks, settings, telegramEphemeral } from "@/db/schema";
 import { SITE, inr } from "@/lib/utils";
 
 /**
@@ -72,38 +72,31 @@ export function render(template: string, p: Payload): string {
       return [`*Order ${s(p, "orderNo")}*`, "", `Your order is ${human[s(p, "status")] ?? s(p, "status")}`, track, "", s(p, "orderUrl", `${SITE.url}/track`)].filter(Boolean).join("\n");
     }
 
+    /**
+     * The alert an operator acts on, so it carries only what changes the
+     * decision: what the product is, where it came from, why it stopped, and
+     * the one number that matters. Internal identifiers, raw message ids and
+     * pipeline internals belong in the dashboard, not in a chat.
+     */
     case "moderation_needed":
       return [
-        `🟢 *Review needed*: ${s(p, "title")}`,
+        ` *Product needs your decision*`,
         ``,
-        `*Supplier:* ${s(p, "supplierName", "Unknown")}`,
-        `*Group:* ${s(p, "groupName", "Unknown")} (${s(p, "groupId", "Unknown")})`,
-        `*Received:* ${s(p, "receivedAt", "Unknown")}`,
-        `*Message Ref:* \`${s(p, "messageId", "Unknown")}\``,
+        `*${s(p, "title")}*`,
+        `From channel: ${s(p, "groupName", s(p, "supplierName", "unknown"))}`,
+        `Why it stopped: ${s(p, "reason", "it needs a human check")}`,
         ``,
-        `*AI Metrics:*`,
-        `• Quality: ${n(p, "quality")}/100`,
-        `• Confidence: ${n(p, "confidence")}%`,
-        `• Reason: ${s(p, "reason")}`,
+        `Publish it only if the details are right — stock and sizes are not supplied automatically.`,
         ``,
         `🔗 ${SITE.url}/admin/moderation`,
       ].join("\n");
 
+    /**
+     * Confirmation, not a report. It self-deletes after a few minutes, so it
+     * states the outcome and the listing — no ids, no metrics, no history.
+     */
     case "product_auto_published":
-      return [
-        `✅ *Auto-Published*: ${s(p, "title")}`,
-        ``,
-        `*Supplier:* ${s(p, "supplierName", "Unknown")}`,
-        `*Group:* ${s(p, "groupName", "Unknown")} (${s(p, "groupId", "Unknown")})`,
-        `*Received:* ${s(p, "receivedAt", "Unknown")}`,
-        `*Message Ref:* \`${s(p, "messageId", "Unknown")}\``,
-        ``,
-        `*AI Metrics:*`,
-        `• Quality: ${n(p, "quality")}/100`,
-        `• Confidence: ${n(p, "confidence")}%`,
-        ``,
-        `🔗 ${SITE.url}/p/${s(p, "slug")}`,
-      ].join("\n");
+      return [`✅ *Live on the site:* ${s(p, "title")}`, ``, `From ${s(p, "groupName", s(p, "supplierName", "your channel"))}.`, ``, `🔗 ${SITE.url}/p/${s(p, "slug")}`].join("\n");
 
     case "order_fulfilment": {
       const rows = Array.isArray(p.lines) ? (p.lines as Array<Record<string, unknown>>) : [];
@@ -139,6 +132,20 @@ export function render(template: string, p: Payload): string {
 
     case "automation_alert":
       return `🔴 *Automation failure*\n${s(p, "job")}: ${s(p, "error")}\n${SITE.url}/admin/automation`;
+
+    // Operator billing state, phrased for a business owner rather than a log.
+    case "subscription_status":
+      return s(p, "text", "Subscription status changed. Automatic uploads may be paused — check *Subscription* in the bot.");
+
+    case "subscription_renewed":
+      return `💳 *Billing renewed*\n\nAutomatic uploads are active${p.paidUntil ? ` until ${String(p.paidUntil).slice(0, 10)}` : ""}. The storefront was never affected.`;
+
+    /**
+     * Handler internals. This template is addressed to the developer bot only;
+     * the admin chat gets a plain sentence instead of a stack trace.
+     */
+    case "telegram_handler_failure":
+      return `🤖 *Telegram handler failure*\ncontext: ${s(p, "context", "unknown")}\n\`\`\`\n${s(p, "detail", "no detail")}\n\`\`\``;
 
     default:
       return JSON.stringify(p);
@@ -179,7 +186,36 @@ function telegramRecipient(audience: TelegramAudience): { token: string; chatId:
   };
 }
 
-async function sendTelegramTo(audience: TelegramAudience, text: string): Promise<{ ok: boolean; error?: string }> {
+/**
+ * Chat hygiene.
+ *
+ * The admin's Telegram thread is a decision surface, not an archive. Routine
+ * confirmations self-delete after ~5 minutes, which is how long they are
+ * worth reading. Two categories are deliberately kept:
+ *
+ *   - anything actionable and unrepeated (a new order, a channel that needs a
+ *     decision) survives until the underlying work is finished;
+ *   - the review alert survives until the product is decided, then it is
+ *     retired by `retireProductAlert`, so a handled item cannot leave a stale
+ *     "Review needed" hanging above the chat forever.
+ *
+ * Deletion is queued through `telegram_ephemeral` and drained by the existing
+ * `telegram-sweep` job. One row per message, insert-on-conflict-nothing, and
+ * the sweeper drops rows whether or not Telegram accepts the delete — so a
+ * message removed by hand can never become a retry loop or an API hammer.
+ */
+const ROUTINE_ADMIN_TEMPLATES = new Set(["product_auto_published", "daily_digest", "subscription_renewed", "subscription_status"]);
+const ADMIN_ROUTINE_TTL_MS = 5 * 60 * 1000;
+
+export const moderationAlertKey = (productId: string) => `tg_alert:${productId}`;
+
+type SendOptions = { ttlMs?: number; retainAlertFor?: string };
+
+async function sendTelegramTo(
+  audience: TelegramAudience,
+  text: string,
+  opts: SendOptions = {},
+): Promise<{ ok: boolean; error?: string }> {
   const { token, chatId } = telegramRecipient(audience);
   if (!token || !chatId) return { ok: false, error: `telegram ${audience} not configured` };
   try {
@@ -187,10 +223,65 @@ async function sendTelegramTo(audience: TelegramAudience, text: string): Promise
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(8_000),
     });
-    return res.ok ? { ok: true } : { ok: false, error: `telegram ${res.status}` };
+    const body = (await res.json().catch(() => ({}))) as { ok?: boolean; description?: string; result?: { message_id?: number } };
+    if (!res.ok || !body.ok) return { ok: false, error: `telegram ${res.status}` };
+
+    const messageId = body.result?.message_id;
+    if (typeof messageId === "number") {
+      const bot = audience === "dev" ? "dev" : "admin";
+      if (opts.ttlMs) {
+        await db
+          .insert(telegramEphemeral)
+          .values({ chatId, messageId, bot, expiresAt: new Date(Date.now() + opts.ttlMs) })
+          .onConflictDoNothing()
+          .catch(() => undefined);
+      }
+      if (opts.retainAlertFor) {
+        await db
+          .insert(settings)
+          .values({ key: moderationAlertKey(opts.retainAlertFor), value: JSON.stringify({ chatId, messageId, bot }) })
+          .onConflictDoUpdate({ target: settings.key, set: { value: JSON.stringify({ chatId, messageId, bot }), updatedAt: new Date() } })
+          .catch(() => undefined);
+      }
+    }
+    return { ok: true };
   } catch (e) {
     return { ok: false, error: e instanceof Error ? e.message : `telegram ${audience} failed` };
+  }
+}
+
+/**
+ * Removes the review alert for a product once a decision exists, from either
+ * surface (Telegram or the dashboard). Best-effort by design: if Telegram has
+ * already dropped the message, or the bot token is unavailable, the mapping is
+ * cleared and nothing is retried.
+ */
+export async function retireProductAlert(productId: string): Promise<void> {
+  if (!productId) return;
+  const key = moderationAlertKey(productId);
+  try {
+    const [row] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
+    await db.delete(settings).where(eq(settings.key, key));
+    if (!row?.value) return;
+    const alert = JSON.parse(row.value) as { chatId?: string; messageId?: number; bot?: string };
+    if (!alert.chatId || typeof alert.messageId !== "number") return;
+    const token = alert.bot === "dev" ? process.env.TELEGRAM_DEV_BOT_TOKEN : process.env.TELEGRAM_ADMIN_BOT_TOKEN;
+    if (!token) return;
+    await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: alert.chatId, message_id: alert.messageId }),
+      signal: AbortSignal.timeout(6_000),
+    }).catch(() => undefined);
+    // Also drop any queued sweep for that message so the job never re-attempts.
+    await db
+      .delete(telegramEphemeral)
+      .where(and(eq(telegramEphemeral.chatId, alert.chatId), eq(telegramEphemeral.messageId, alert.messageId)))
+      .catch(() => undefined);
+  } catch {
+    /* hygiene must never fail a moderation decision */
   }
 }
 
@@ -327,15 +418,21 @@ export async function dispatchNotifications(limit = 50) {
       automation_alert: "dev",
       worker_outdated: "dev",
       notification_transport_down: "dev",
+      telegram_handler_failure: "dev",
       daily_digest: "admin",
       new_order: "admin",
       order_fulfilment: "admin",
       security_alert: "dev",
     };
     const audience: TelegramAudience = audit[item.template] ?? "admin";
+    // Routine confirmations self-clean; the review alert waits for the decision.
+    const retainFor = item.template === "moderation_needed" && typeof payload.id === "string" ? payload.id : undefined;
     const result =
       item.channel === "telegram"
-        ? await sendTelegramTo(audience, text)
+        ? await sendTelegramTo(audience, text, {
+            ttlMs: audience === "admin" && ROUTINE_ADMIN_TEMPLATES.has(item.template) ? ADMIN_ROUTINE_TTL_MS : undefined,
+            retainAlertFor: retainFor,
+          })
         : item.channel === "whatsapp"
           ? await sendWhatsApp(to, text)
           : { ok: false, error: `channel ${item.channel} not implemented` };

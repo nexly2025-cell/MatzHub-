@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 import { and, eq, like, lt, lte } from "drizzle-orm";
 import { db } from "@/db";
-import { settings, telegramEphemeral } from "@/db/schema";
-import { keyboardFor, lookupSku, parseCommand, runCommand, SKU_PATTERN, type Button } from "@/lib/telegram";
+import { notifications, settings, telegramEphemeral } from "@/db/schema";
+import { HANDLER_BUDGET_MS, isSlowAction, keyboardFor, lookupSku, parseCommand, runCommand, SKU_PATTERN, type Button } from "@/lib/telegram";
 
 export const dynamic = "force-dynamic";
 
@@ -50,32 +50,58 @@ function allowedFor(bot: BotKind): string[] {
   return (raw ?? "").split(",").map((v) => v.trim()).filter(Boolean);
 }
 
+/**
+ * Every Telegram round trip is bounded. A button press runs inside a serverless
+ * request; an unbounded socket call to api.telegram.org can hold it open until
+ * the platform kills it, which is exactly how a "frozen bot" is produced.
+ */
+const TG_TIMEOUT_MS = 8_000;
+
+async function tgApi(token: string, method: string, body: Record<string, unknown>, form?: FormData): Promise<Response | null> {
+  try {
+    return form
+      ? await fetch(API(token, method), { method: "POST", body: form, signal: AbortSignal.timeout(TG_TIMEOUT_MS) })
+      : await fetch(API(token, method), {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+          signal: AbortSignal.timeout(TG_TIMEOUT_MS),
+        });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Telegram accepts exactly one action per button — `callback_data` or `url` —
+ * so the two button kinds are normalised here rather than at every call site.
+ */
+function markup(keyboard?: Button[][]) {
+  if (!keyboard?.length) return {};
+  const inline_keyboard = keyboard
+    .filter((row) => row.length > 0)
+    .map((row) =>
+      row.map((b) => (b.url ? { text: b.text, url: b.url } : { text: b.text, callback_data: b.callback_data ?? "" })),
+    );
+  return { reply_markup: { inline_keyboard } };
+}
+
+const idOf = async (r: Response | null) => {
+  if (!r) return null;
+  const d = (await r.json().catch(() => ({}))) as { ok?: boolean; result?: { message_id?: number } };
+  return d.ok ? (d.result?.message_id ?? null) : null;
+};
+
 async function send(bot: BotKind, chatId: string, text: string, keyboard?: Button[][]): Promise<number | null> {
   const token = tokenFor(bot);
   if (!token) return null;
-  const post = (body: Record<string, unknown>) =>
-    fetch(API(token, "sendMessage"), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    });
-
-  const idOf = async (r: Response) => {
-    const d = (await r.json().catch(() => ({}))) as { ok?: boolean; result?: { message_id?: number } };
-    return d.ok ? (d.result?.message_id ?? null) : null;
-  };
-
-  try {
-    const markup = keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {};
-    const res = await post({ chat_id: chatId, text, parse_mode: "Markdown", disable_web_page_preview: true, ...markup });
-    if (res.ok) return idOf(res);
-    // Legacy Markdown rejects unbalanced _ * [ ` which can appear in supplier
-    // titles and driver error strings. Rather than silently dropping the reply,
-    // resend it as plain text so the operator always gets the information.
-    return idOf(await post({ chat_id: chatId, text, disable_web_page_preview: true, ...markup }));
-  } catch {
-    return null; /* transport down — nothing useful we can do from here */
-  }
+  const base = { chat_id: chatId, text, disable_web_page_preview: true, ...markup(keyboard) };
+  const marked = await tgApi(token, "sendMessage", { ...base, parse_mode: "Markdown" });
+  if (marked?.ok) return idOf(marked);
+  // Legacy Markdown rejects unbalanced _ * [ ` which can appear in supplier
+  // titles and driver error strings. Rather than silently dropping the reply,
+  // resend it as plain text so the operator always gets the information.
+  return idOf(await tgApi(token, "sendMessage", base));
 }
 
 async function sendPhoto(bot: BotKind, chatId: string, base64: string, caption: string): Promise<number | null> {
@@ -86,13 +112,7 @@ async function sendPhoto(bot: BotKind, chatId: string, base64: string, caption: 
   form.append("caption", caption);
   form.append("parse_mode", "Markdown");
   form.append("photo", new Blob([Uint8Array.from(atob(base64), (c) => c.charCodeAt(0))], { type: "image/png" }), "qr.png");
-  try {
-    const r = await fetch(API(token, "sendPhoto"), { method: "POST", body: form });
-    const d = (await r.json().catch(() => ({}))) as { ok?: boolean; result?: { message_id?: number } };
-    return d.ok ? (d.result?.message_id ?? null) : null;
-  } catch {
-    return null;
-  }
+  return idOf(await tgApi(token, "sendPhoto", {}, form));
 }
 
 async function editMessage(bot: BotKind, chatId: string, messageId: number, text: string, keyboard?: Button[][]) {
@@ -101,39 +121,49 @@ async function editMessage(bot: BotKind, chatId: string, messageId: number, text
   const body: Record<string, unknown> = {
     chat_id: chatId, message_id: messageId, text,
     parse_mode: "Markdown", disable_web_page_preview: true,
-    ...(keyboard ? { reply_markup: { inline_keyboard: keyboard } } : {}),
+    ...markup(keyboard),
   };
-  const r = await fetch(API(token, "editMessageText"), {
-    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-  }).catch(() => null);
+  const r = await tgApi(token, "editMessageText", body);
   // Markdown can be rejected by supplier titles and driver errors; retry plain
   // so the operator still sees the result rather than a stale screen.
   if (r && !r.ok) {
     delete body.parse_mode;
-    await fetch(API(token, "editMessageText"), {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
-    }).catch(() => undefined);
+    await tgApi(token, "editMessageText", body);
   }
 }
 
-/** Clears the button's loading spinner. Required by the Bot API. */
+/** Clears the button's spinner, and optionally shows the operator a toast. */
 async function answerCallback(bot: BotKind, id: string, text?: string) {
   const token = tokenFor(bot);
   if (!token) return;
-  await fetch(API(token, "answerCallbackQuery"), {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ callback_query_id: id, ...(text ? { text } : {}) }),
-  }).catch(() => undefined);
+  await tgApi(token, "answerCallbackQuery", { callback_query_id: id, ...(text ? { text } : {}) });
 }
 
 async function deleteMessage(bot: BotKind, chatId: string, messageId: number) {
   const token = tokenFor(bot);
   if (!token) return;
-  await fetch(API(token, "deleteMessage"), {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId }),
-  }).catch(() => undefined);
+  await tgApi(token, "deleteMessage", { chat_id: chatId, message_id: messageId });
+}
+
+/**
+ * Technical detail never lands in the admin chat. It goes to the developer bot
+ * directly (not via the queue) so a handler failure is visible immediately even
+ * when the notification dispatcher is what broke.
+ */
+async function alertDevelopers(detail: string, context: string) {
+  const token = process.env.TELEGRAM_DEV_BOT_TOKEN || "";
+  const chat = process.env.TELEGRAM_DEV_CHAT_ID || "";
+  if (token && chat) {
+    await tgApi(token, "sendMessage", {
+      chat_id: chat.split(",")[0].trim(),
+      text: ` *Telegram handler failure*\n\`${context}\`\n\`\`\`\n${detail.slice(0, 700)}\n\`\`\``,
+      disable_web_page_preview: true,
+    });
+  }
+  await db
+    .insert(notifications)
+    .values({ channel: "telegram", audience: "dev", recipient: "ops", template: "telegram_handler_failure", payload: { context, detail: detail.slice(0, 500) } })
+    .catch(() => undefined);
 }
 
 /**
@@ -159,10 +189,7 @@ async function repin(bot: BotKind, chatId: string, kind: "panel" | "dashboard", 
   const [prev] = await db.select().from(settings).where(eq(settings.key, key)).limit(1);
   if (prev?.value) {
     const previousId = Number(prev.value);
-    await fetch(API(token, "unpinChatMessage"), {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ chat_id: chatId, message_id: previousId }),
-    }).catch(() => undefined);
+    await tgApi(token, "unpinChatMessage", { chat_id: chatId, message_id: previousId });
     // A panel is a replaceable control surface, not an audit record. Removing
     // its predecessor prevents `/panel` retries from leaving a stack of stale
     // keyboards in the operator chat. Failure is harmless (e.g. user removed
@@ -170,10 +197,7 @@ async function repin(bot: BotKind, chatId: string, kind: "panel" | "dashboard", 
     await deleteMessage(bot, chatId, previousId);
   }
 
-  await fetch(API(token, "pinChatMessage"), {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ chat_id: chatId, message_id: messageId, disable_notification: true }),
-  }).catch(() => undefined);
+  await tgApi(token, "pinChatMessage", { chat_id: chatId, message_id: messageId, disable_notification: true });
 
   await db
     .insert(settings)
@@ -259,6 +283,14 @@ export async function sweepExpiredMessages(): Promise<number> {
     .where(and(like(settings.key, "tg_cb:%"), lt(settings.updatedAt, new Date(Date.now() - 60 * 60 * 1000))))
     .catch(() => undefined);
 
+  // An abandoned guided flow (admin opened "Add channel", never confirmed) must
+  // not linger. runCommand also expires these after 15 minutes; this clears the
+  // row so the settings table stays a control surface and not a graveyard.
+  await db
+    .delete(settings)
+    .where(and(like(settings.key, "tg_pending_channel:%"), lt(settings.updatedAt, new Date(Date.now() - 24 * 60 * 60 * 1000))))
+    .catch(() => undefined);
+
   return deleted;
 }
 
@@ -288,10 +320,134 @@ type Update = {
 };
 
 /**
+ * Runs a handler under a ceiling.
+ *
+ * A button that waits on the WhatsApp reader or a loopback cron call can outrun
+ * the request budget, and the admin's phone then shows a spinner with no answer
+ * — indistinguishable from a dead bot. Past the ceiling the operator gets a
+ * plain status line instead and the update is still acknowledged with 200, so
+ * Telegram never retries the same action twice.
+ */
+async function withinBudget<T>(work: Promise<T>, ms: number): Promise<{ ok: true; value: T } | { ok: false }> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const raced = await Promise.race([
+      work.then((value) => ({ done: true as const, value })),
+      new Promise<{ done: false }>((resolve) => {
+        timer = setTimeout(() => resolve({ done: false }), ms);
+      }),
+    ]);
+    return raced.done ? { ok: true, value: raced.value } : { ok: false };
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+/**
+ * The pinned dashboard is a permanent anchor, so pressing it twice must not
+ * stack copies. When the same link is already pinned, the press is answered
+ * with a toast and nothing is sent.
+ */
+async function dashboardAlreadyPinned(chat: string, dedupeKey?: string) {
+  if (!dedupeKey) return false;
+  const [pinned, seen] = await Promise.all([
+    db.select().from(settings).where(eq(settings.key, `tg_pin:dashboard:${chat}`)).limit(1),
+    db.select().from(settings).where(eq(settings.key, `tg_pin:dashboard_text:${chat}`)).limit(1),
+  ]);
+  return Boolean(pinned[0]?.value && seen[0]?.value === dedupeKey);
+}
+
+async function rememberDashboardPinned(chat: string, dedupeKey?: string) {
+  if (!dedupeKey) return;
+  await db
+    .insert(settings)
+    .values({ key: `tg_pin:dashboard_text:${chat}`, value: dedupeKey })
+    .onConflictDoUpdate({ target: settings.key, set: { value: dedupeKey, updatedAt: new Date() } })
+    .catch(() => undefined);
+}
+
+type CallbackReply = { text: string; keyboard?: Button[][]; photoBase64?: string; ephemeral?: boolean; dedupeKey?: string };
+
+/**
+ * Delivers a reply to a button press.
+ *
+ * The pinned panel is a permanent anchor. Editing it in place would turn it
+ * into whatever view was opened, so the operator would lose the control panel
+ * while Telegram kept a stale pin. Work therefore happens in a separate
+ * throwaway message that is queued for automatic deletion.
+ */
+async function deliverCallbackReply(
+  bot: BotKind,
+  chat: string,
+  cbMsgId: number,
+  reply: CallbackReply,
+  command: string,
+): Promise<void> {
+  const [pin] = await db.select().from(settings).where(eq(settings.key, `tg_pin:panel:${chat}`)).limit(1);
+  const pressedOnPanel = pin?.value === String(cbMsgId);
+
+  if (reply.photoBase64) {
+    // A QR cannot replace text in place, so it is sent as its own message and
+    // the controlling message explains what to do with it. The photo is queued
+    // for deletion — a scanned or expired code is pure clutter.
+    const photoId = await sendPhoto(bot, chat, reply.photoBase64, reply.text);
+    await expireLater(bot, chat, [photoId]);
+    if (!pressedOnPanel) {
+      // Keep the admin on the step they were working through (verify after
+      // scanning) instead of dropping them back to a generic menu.
+      await editMessage(
+        bot,
+        chat,
+        cbMsgId,
+        "*Pairing code sent above.*\nIt expires in about 60 seconds.",
+        reply.keyboard ?? keyboardFor("m:wa"),
+      );
+    }
+    return;
+  }
+
+  if (command === "dashboard") {
+    if (await dashboardAlreadyPinned(chat, reply.dedupeKey)) return; // already pinned; no duplicate
+    const sent = await send(bot, chat, reply.text, reply.keyboard);
+    if (typeof sent === "number") {
+      await repin(bot, chat, "dashboard", sent);
+      await rememberDashboardPinned(chat, reply.dedupeKey);
+    }
+    return;
+  }
+
+  if (pressedOnPanel) {
+    // Clear the previous working message so only one is ever open.
+    await sweepChatNow(bot, chat);
+    const sent = await send(bot, chat, reply.text, reply.keyboard ?? keyboardBack());
+    await expireLater(bot, chat, [sent]);
+    return;
+  }
+
+  await editMessage(bot, chat, cbMsgId, reply.text, reply.keyboard ?? keyboardBack());
+  // Keep the working message on the deletion clock as it is reused.
+  await expireLater(bot, chat, [cbMsgId]);
+}
+
+/**
  * Shared handler. `/api/telegram/webhook` calls it with "admin";
  * `/api/telegram/webhook/dev` calls it with "dev".
+ *
+ * The wrapper guarantees a 200 and a developer alert for anything unexpected:
+ * a non-2xx makes Telegram redeliver the same update aggressively, so an
+ * internal error must never turn into a retry storm — and must never print a
+ * stack trace into an admin's chat.
  */
 export async function handleUpdate(request: Request, bot: BotKind) {
+  try {
+    return await processUpdate(request, bot);
+  } catch (e) {
+    await alertDevelopers(e instanceof Error ? (e.stack ?? e.message) : String(e), "update dispatch");
+    return NextResponse.json({ ok: true }, { status: 200 });
+  }
+}
+
+async function processUpdate(request: Request, bot: BotKind) {
   // Layer 1 — prove the call came from Telegram, not the open internet.
   const expected = secretFor(bot);
   if (expected && request.headers.get("x-telegram-bot-api-secret-token") !== expected) {
@@ -317,50 +473,36 @@ export async function handleUpdate(request: Request, bot: BotKind) {
       return NextResponse.json({ ok: true });
     }
     const chat = String(cbChat);
-    // Clear the spinner first — Telegram only allows ~10s and an unanswered
-    // callback leaves the button visibly stuck.
-    await answerCallback(bot, cb.id);
+    const data = cb.data ?? "";
+    // Answer first — Telegram allows ~10s and an unanswered callback leaves the
+    // button visibly stuck. Anything that touches the network also carries a
+    // one-line acknowledgement, so the admin knows the tap registered.
+    await answerCallback(bot, cb.id, isSlowAction(data) ? "⏳ On it…" : undefined);
     // Then make sure this is the first (and only) time we act on it.
     if (!(await claimCallback(cb.id))) return NextResponse.json({ ok: true });
-    const [command, ...cbArgs] = (cb.data ?? "").split(":").length > 1 && (cb.data ?? "").startsWith("m:")
-      ? [cb.data ?? "m:home"]
-      : (cb.data ?? "").split(" ");
+    const [command, ...cbArgs] = data.split(":").length > 1 && data.startsWith("m:") ? [data || "m:home"] : data.split(" ");
+
+    const outcome = await withinBudget(runCommand(command, cbArgs, chat, bot), HANDLER_BUDGET_MS);
+    if (!outcome.ok) {
+      // The handler is still running somewhere; say so rather than going silent.
+      await deliverCallbackReply(bot, chat, cbMsgId, {
+        text: "⏳ *That is taking longer than usual.*\n\nIt may still finish — check *Sync status* in a moment. Nothing was left half-applied.",
+        keyboard: keyboardFor("m:home"),
+      }, command);
+      await alertDevelopers(`timeout after ${HANDLER_BUDGET_MS}ms`, `callback ${command}`);
+      return NextResponse.json({ ok: true });
+    }
+
     try {
-      const reply = await runCommand(command, cbArgs, chat, bot);
-
-      // The pinned panel is a permanent anchor. Editing it in place turns it
-      // into whatever view was opened, so the operator loses the control panel
-      // and Telegram keeps a stale pin. Work happens in a separate throwaway
-      // message that is queued for automatic deletion.
-      const [pin] = await db.select().from(settings).where(eq(settings.key, `tg_pin:panel:${chat}`)).limit(1);
-      const pressedOnPanel = pin?.value === String(cbMsgId);
-
-      if (reply.photoBase64) {
-        // A QR cannot replace text in place, so it is sent as its own message
-        // and the controlling message explains what to do with it. The photo
-        // is queued for deletion — a scanned or expired code is pure clutter.
-        const photoId = await sendPhoto(bot, chat, reply.photoBase64, reply.text);
-        await expireLater(bot, chat, [photoId]);
-        if (!pressedOnPanel) {
-          await editMessage(bot, chat, cbMsgId, "*Pairing code sent above.*\nIt expires in about 60 seconds.", keyboardFor("m:wa"));
-        }
-      } else if (command === "dashboard") {
-        // Pinned separately from the panel, so it is always sent, never edited.
-        const sent = await send(bot, chat, reply.text, reply.keyboard);
-        if (typeof sent === "number") await repin(bot, chat, "dashboard", sent);
-      } else if (pressedOnPanel) {
-        // Clear the previous working message so only one is ever open.
-        await sweepChatNow(bot, chat);
-        const sent = await send(bot, chat, reply.text, reply.keyboard ?? keyboardBack());
-        await expireLater(bot, chat, [sent]);
-      } else {
-        await editMessage(bot, chat, cbMsgId, reply.text, reply.keyboard ?? keyboardBack());
-        // Keep the working message on the deletion clock as it is reused.
-        await expireLater(bot, chat, [cbMsgId]);
-      }
+      await deliverCallbackReply(bot, chat, cbMsgId, outcome.value, command);
     } catch (e) {
-      // Failures are never ephemeral: they are the record of what went wrong.
-      await send(bot, chat, `Failed:\n\`${e instanceof Error ? e.message : "unknown"}\``, keyboardBack());
+      // The admin gets the fact, the developer gets the detail. Raw error text
+      // from a supplier title or a transport failure is never shown to a phone.
+      await deliverCallbackReply(bot, chat, cbMsgId, {
+        text: "⚠️ *That action did not complete.*\n\nNo change was left half-applied. Try again, or use the dashboard.",
+        keyboard: keyboardFor("m:home"),
+      }, command);
+      await alertDevelopers(e instanceof Error ? (e.stack ?? e.message) : String(e), `callback ${command}`);
     }
     return NextResponse.json({ ok: true });
   }
@@ -397,7 +539,14 @@ export async function handleUpdate(request: Request, bot: BotKind) {
     // Clear the last round of routine output before adding more.
     await sweepChatNow(bot, chat);
 
-    const reply = await runCommand(parsed.command, parsed.args, chat, bot);
+    const outcome = await withinBudget(runCommand(parsed.command, parsed.args, chat, bot), HANDLER_BUDGET_MS);
+    if (!outcome.ok) {
+      await send(bot, chat, "⏳ *That is taking longer than usual.*\n\nCheck *Sync status* in a moment — nothing was left half-applied.", keyboardBack());
+      await alertDevelopers(`timeout after ${HANDLER_BUDGET_MS}ms`, `command /${parsed.command}`);
+      return NextResponse.json({ ok: true });
+    }
+    const reply = outcome.value;
+
     const sent = reply.photoBase64
       ? await sendPhoto(bot, chat, reply.photoBase64, reply.text)
       : await send(bot, chat, reply.text, reply.keyboard);
@@ -405,7 +554,10 @@ export async function handleUpdate(request: Request, bot: BotKind) {
     // Panel and dashboard are the two permanent anchors.
     if (!reply.ephemeral && typeof sent === "number") {
       if (["panel", "help", "start"].includes(parsed.command)) await repin(bot, chat, "panel", sent);
-      if (parsed.command === "dashboard") await repin(bot, chat, "dashboard", sent);
+      if (parsed.command === "dashboard") {
+        await repin(bot, chat, "dashboard", sent);
+        await rememberDashboardPinned(chat, reply.dedupeKey);
+      }
     }
 
     // Queue routine output and the command that produced it. Photos are always
@@ -414,7 +566,8 @@ export async function handleUpdate(request: Request, bot: BotKind) {
       await expireLater(bot, chat, [sent, msg?.message_id]);
     }
   } catch (e) {
-    await send(bot, chat, `Command failed:\n\`${e instanceof Error ? e.message : "unknown error"}\``);
+    await send(bot, chat, "⚠️ *That command did not complete.* Try again, or use the dashboard.", keyboardBack());
+    await alertDevelopers(e instanceof Error ? (e.stack ?? e.message) : String(e), `command /${parsed.command}`);
   }
 
   return NextResponse.json({ ok: true });

@@ -113,7 +113,9 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
   // ---- 0a. SUPPLIER ACKNOWLEDGEMENT: any group message matching
   // "DONE/OK/ACCEPTED/SHIPPED MH######XXXX" flips those order items to accepted.
   // Runs before anything else so supplier confirmations never turn into products.
-  const ackMatch = caption.match(/\b(?:done|ok|accepted|shipped)\s+([A-Z]{2}\d{6}[A-Z0-9]{4})\b/i);
+  // Order numbers are MH + 6-digit date + 10 hex chars = 18 chars total.
+  // The previous regex only matched 12-char refs and could never hit a real order.
+  const ackMatch = caption.match(/\b(?:done|ok|accepted|shipped)\s+(MH\d{6}[A-F0-9]{6,10})\b/i);
   if (ackMatch) {
     const orderRef = ackMatch[1].toUpperCase();
     const [order] = await db.select().from(orders).where(eq(orders.orderNo, orderRef)).limit(1);
@@ -193,6 +195,15 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     }
   }
 
+  // A channel the operator has removed or paused stops being read here. This
+  // check is what makes *Remove channel* in Telegram true rather than cosmetic:
+  // without it the JID allowlist alone kept ingesting a "removed" source, and
+  // the block was silently undone on the next supplier post.
+  if (mfr.status !== "active") {
+    await log("rejected", { error: `channel_${mfr.status}`, manufacturerId: mfr.id });
+    return { messageId: msg.messageId, stage: "rejected", reason: `channel is ${mfr.status}` };
+  }
+
   if (!mfr.autoPublish) {
     await db.update(manufacturers).set({ autoPublish: true }).where(eq(manufacturers.id, mfr.id));
     mfr = { ...mfr, autoPublish: true };
@@ -214,13 +225,21 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
     imageHash,
   });
   if (resolution.action !== "create") {
+    // Run enrichment BEFORE applying the update so quality, confidence and
+    // pricing reflect the actual incoming message — not zeros that would
+    // overwrite previously good data.
+    const preEnrich = resolution.action === "update"
+      ? await enrichProduct({ caption, imageUrl: msg.imageUrl, groupName: msg.groupName ?? mfr.sourceGroupName, defaultCategory: null })
+      : null;
     const out = await applyResolution(resolution, {
       messageId: msg.messageId,
       caption,
       imageUrl: msg.imageUrl ?? null,
       contentHash: captionHash,
       imageHash,
-      enrichment: { costPrice: 0, qualityScore: 0, confidence: 0 },
+      enrichment: preEnrich
+        ? { costPrice: preEnrich.costPrice, qualityScore: preEnrich.qualityScore, confidence: preEnrich.confidence }
+        : { costPrice: 0, qualityScore: 0, confidence: 0 },
     });
     await log(out.stage === 'updated' ? 'updated' : 'deduped', { productId: out.productId });
     return { messageId: msg.messageId, stage: out.stage, productId: out.productId };
@@ -241,18 +260,15 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       .limit(1)
   )[0];
 
-  // Approximate duplicate detection.
+  // Cross-supplier caption-similarity duplicate detection.
   //
-  // Scans ACROSS suppliers, not just this one. Two channels frequently carry
-  // the same piece with slightly different photography, so a per-manufacturer
-  // scan let visually-identical products publish twice. The exact-hash check
-  // above only catches byte-identical captions or image URLs.
-  //
-  // Cost stays bounded by narrowing to the same category and the same 30-day
-  // window, still capped at 50 rows.
-  if (!dupe && msg.imageUrl) {
+  // The previous "image similarity" check compared SHA256 digests of Supabase
+  // Storage URLs (random strings), not actual image content, producing noise
+  // between 0.28-0.38 for every pair. It has been replaced with caption-only
+  // similarity, which is the one signal that actually carries meaning.
+  if (!dupe && caption.trim()) {
     const recent = await db
-      .select({ id: products.id, slug: products.slug, imageHash: products.imageHash, title: products.title })
+      .select({ id: products.id, slug: products.slug, title: products.title })
       .from(products)
       .where(
         and(
@@ -263,18 +279,14 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       .orderBy(desc(products.createdAt))
       .limit(50);
 
-    const { captionSimilarity, imageHashSimilarity } = await import("@/lib/ai");
+    const { captionSimilarity } = await import("@/lib/ai");
     const best = recent
-      .map((r) => ({
-        ...r,
-        imageSim: imageHash ? imageHashSimilarity(r.imageHash ?? "", imageHash) : 0,
-        captionSim: captionSimilarity(caption, r.title ?? ""),
-      }))
-      .sort((a, b) => b.imageSim - a.imageSim)[0];
+      .map((r) => ({ ...r, sim: captionSimilarity(caption, r.title ?? "") }))
+      .sort((a, b) => b.sim - a.sim)[0];
 
-    if (best && best.imageSim >= 0.78) {
+    if (best && best.sim >= 0.78) {
       dupe = { id: best.id, slug: best.slug };
-      await log("deduped", { productId: best.id, notes: `image similarity ${best.imageSim.toFixed(2)} with ${best.slug}` });
+      await log("deduped", { productId: best.id, notes: `caption similarity ${best.sim.toFixed(2)} with ${best.slug}` });
     }
   }
 
@@ -361,7 +373,11 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
       price: pricing.price,
       resellerPrice: pricing.resellerPrice,
       marginPercent: pricing.marginPercent,
-      stockQty: 25,
+      // Stock is genuinely unknown from the supplier message. Zero means "we
+      // don't know how many there are", not "sold out". The storefront shows
+      // "Check availability on WhatsApp" for zero-stock items rather than a
+      // false "25 in stock" claim.
+      stockQty: 0,
       availability: "in_stock",
       status,
       qualityScore: enrichment.qualityScore,
@@ -401,7 +417,8 @@ export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
         productId: created.id,
         label: v.label,
         axis: v.axis,
-        stockQty: 10,
+        // Stock per variant is unknown — zero is honest.
+        stockQty: 0,
         position: i,
       })),
     );

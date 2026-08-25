@@ -4,6 +4,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { auditLog, opsTasks, products } from "@/db/schema";
 import { getPendingProducts } from "@/lib/queries";
+import { retireProductAlert } from "@/lib/notify";
 import { inr } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -20,6 +21,10 @@ async function decide(formData: FormData) {
   await db.update(products).set(patch).where(eq(products.id, id));
   await db.update(opsTasks).set({ status: "resolved", resolvedAt: new Date() }).where(eq(opsTasks.entityId, id));
   await db.insert(auditLog).values({ actor: "ops", action: `product.${action}`, entityType: "product", entityId: id });
+  // The decision exists, so the Telegram alert that asked for it is retired.
+  // This is what keeps the admin chat clear without deleting anything the
+  // operator has not acted on yet.
+  await retireProductAlert(id);
   revalidatePath("/admin/moderation");
   revalidatePath("/admin");
 }
