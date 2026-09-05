@@ -40,6 +40,7 @@ export async function classifyMessage(args: {
     .select({
       id: products.id,
       title: products.title,
+      costPrice: products.costPrice,
       price: products.price,
       stockQty: products.stockQty,
       heroImage: products.heroImage,
@@ -47,6 +48,7 @@ export async function classifyMessage(args: {
       messageId: products.messageId,
       contentHash: products.contentHash,
       status: products.status,
+      createdAt: products.createdAt,
     })
     .from(products)
     .where(and(eq(products.manufacturerId, manufacturerId), sql`${products.createdAt} > now() - interval '30 days'`))
@@ -78,6 +80,22 @@ export async function classifyMessage(args: {
       if (imageUrl && p.heroImage !== imageUrl) changes.push("image");
       if (p.contentHash !== contentHash) changes.push("caption");
       if (changes.length > 0) return { action: "update", productId: p.id, changes };
+    }
+  }
+
+  // Adjacent split-message reconciliation (image album + separate price/caption
+  // text posted within 3 minutes by the same supplier).
+  const now = Date.now();
+  for (const p of recent) {
+    if (p.status !== "pending_review") continue;
+    const ageSec = (now - new Date(p.createdAt).getTime()) / 1000;
+    if (ageSec > 180) continue;
+
+    if (imageUrl && !p.heroImage && p.costPrice > 0) {
+      return { action: "update", productId: p.id, changes: ["image"] };
+    }
+    if (!imageUrl && caption && p.heroImage && p.costPrice === 0) {
+      return { action: "update", productId: p.id, changes: ["caption"] };
     }
   }
 
@@ -121,8 +139,20 @@ export async function applyResolution(
       }
       patch.qualityScore = enrichment.qualityScore;
       patch.confidence = enrichment.confidence;
+      const [existing] = await db
+        .select({ heroImage: products.heroImage, costPrice: products.costPrice, status: products.status })
+        .from(products)
+        .where(eq(products.id, resolution.productId))
+        .limit(1);
+      const finalHero = (patch.heroImage as string | undefined) || existing?.heroImage || "";
+      const finalCost = (patch.costPrice as number | undefined) ?? existing?.costPrice ?? 0;
+      if (finalHero.startsWith("http") && finalCost > 0 && existing?.status === "pending_review") {
+        patch.status = "published";
+        patch.publishedAt = new Date();
+        patch.moderationReason = null;
+      }
       await db.update(products).set(patch as never).where(eq(products.id, resolution.productId));
-      return { stage: "updated", productId: resolution.productId };
+      return { stage: patch.status === "published" ? "published" : "updated", productId: resolution.productId };
     }
     case "reactivate": {
       await db

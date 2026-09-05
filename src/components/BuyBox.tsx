@@ -141,30 +141,47 @@ export default function BuyBox({
           </div>
         </div>
 
-        {/* Dual Actions: Add to Cart (multi-item orders) & Buy on WhatsApp (instant single-item checkouts) */}
+        {/* Primary WhatsApp-first commerce action */}
+        <a
+          className="btn btn-whatsapp mt-5 w-full text-[15px] font-semibold"
+          href={orderHref()}
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={() => track("whatsapp_order", { productId: p.id, value: p.price * qty })}
+        >
+          {soldOut ? "Ask about restock" : "Buy on WhatsApp"}
+        </a>
+
         <button
           type="button"
           onClick={handleAddToCart}
           disabled={unavailable}
-          className="btn btn-solid mt-4 w-full bg-ink text-oninverse hover:opacity-90"
+          className="btn btn-solid mt-2.5 w-full bg-ink text-oninverse hover:opacity-90"
         >
-          {addedSuccess ? "✓ Added to Cart!" : "Add to Cart"}
+          {addedSuccess ? "✓ Added to Cart" : soldOut ? "Sold out" : "Add to Cart"}
         </button>
 
-        <a
-          className="btn btn-whatsapp mt-2 w-full"
-          href={orderHref()}
-          target="_blank"
-          rel="noopener noreferrer"
-          aria-disabled={soldOut}
-          onClick={() => track("whatsapp_order", { productId: p.id, value: p.price * qty })}
-        >
-          {soldOut ? "Ask about availability" : "Buy on WhatsApp"}
-        </a>
-
-        <button type="button" onClick={wishToggle} className="btn btn-outline mt-3 w-full" aria-pressed={saved}>
-          {saved ? "♥ Saved" : "♡ Save for later"}
-        </button>
+        <div className="mt-2.5 grid grid-cols-2 gap-2.5">
+          <button type="button" onClick={wishToggle} className="btn btn-outline w-full" aria-pressed={saved}>
+            {saved ? "♥ Saved" : "♡ Save"}
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              const url = typeof window !== "undefined" ? window.location.href : "";
+              const text = `${p.title} — ${inr(p.price)} on MatzHub`;
+              if (typeof navigator !== "undefined" && navigator.share) {
+                navigator.share({ title: p.title, text, url }).catch(() => undefined);
+              } else if (typeof navigator !== "undefined" && navigator.clipboard) {
+                navigator.clipboard.writeText(`${text}
+${url}`).catch(() => undefined);
+              }
+            }}
+            className="btn btn-outline w-full"
+          >
+            ↗ Share
+          </button>
+        </div>
 
         <dl className="mt-6 space-y-2.5 border-t border-line pt-5 text-[12px]">
           <div className="flex gap-3">
@@ -205,23 +222,23 @@ export default function BuyBox({
       {/* mobile sticky CTA */}
       <div className="fixed bottom-0 left-0 right-0 z-40 border-t border-line bg-canvas/96 px-4 py-3 backdrop-blur-xl pb-safe lg:hidden">
         <div className="mx-auto flex max-w-lg gap-2.5">
+          <a
+            className="btn btn-whatsapp h-12 flex-1 text-[14px] font-semibold"
+            href={orderHref()}
+            target="_blank"
+            rel="noopener noreferrer"
+            onClick={() => track("whatsapp_order", { productId: p.id, value: p.price * qty })}
+          >
+            {soldOut ? "Ask about restock" : "Buy on WhatsApp"}
+          </a>
           <button
             type="button"
             onClick={handleAddToCart}
             disabled={unavailable}
             className="btn btn-solid h-12 flex-1 text-[14px] bg-ink text-oninverse hover:opacity-90"
           >
-            {addedSuccess ? "✓ Added" : "Add to Cart"}
+            {addedSuccess ? "✓ Added" : soldOut ? "Sold out" : "Add to Cart"}
           </button>
-          <a
-            className="btn btn-whatsapp h-12 flex-1 text-[14px]"
-            href={orderHref()}
-            target="_blank"
-            rel="noopener noreferrer"
-            onClick={() => track("whatsapp_order", { productId: p.id, value: p.price * qty })}
-          >
-            {soldOut ? "Ask availability" : "Buy on WhatsApp"}
-          </a>
         </div>
       </div>
     </aside>
