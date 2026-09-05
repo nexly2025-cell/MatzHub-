@@ -186,22 +186,36 @@ const SUPPLIER_COMMERCIAL_LINE = new RegExp(
   "i",
 );
 
-/**
- * Strips supplier-internal commercial lines from a raw WhatsApp caption,
- * keeping only descriptive product text.
- *
- * This is the boundary between what a supplier writes and what a customer
- * reads. Without it the buying price is republished verbatim: a caption of
- * "Chronograph 42mm\nCost 2400\nStock 5" produced a public description
- * containing "Cost 2400 Stock 5", exposing both our margin and our inventory.
- */
+const PROMOTIONAL_OR_PACKAGING_LINE = new RegExp(
+  [
+    String.raw`\b(with\s+(?:original\s+|branded\s+|safety\s+|magnetic\s+|double\s+|og\s+)?box\s+(?:as\s+shown|as\s+pictured)|as\s+shown\s+in\s+picture|as\s+pictured|proper\s+box\s+packing|double\s+box\s+packing|box\s+packing|dust\s*bag\s*packing|with\s+dust\s*bag|with\s+bill|with\s+cards?|with\s+tags?|with\s+safety\s+box|with\s+carry\s+bag|proper\s+packing|duty\s+free\s+packing|df\s+packing|comes\s+magnetic|original\s+dust\s*bag|dust\s*cover|free\s+original\s+box\s+kit|including\s+booklet\s+manual)\b`,
+    String.raw`\b(1st\s+time\s+in\s+india|first\s+time\s+in\s+india|1st\s+time|official\s+model|restocked\s*(?:on|in)?\s*high\s*demand|high\s*demand|guaranteed\s+orders|upload(ed)?\s+on\s+reels|quality\s+guaranteed|premium\s+quality\s+guaranteed|top\s+premium\s+quality|superb\s+stuff|super\s+premium|very\s+very\s+premium|very\s+premium|don['’]?t\s+compare|package\s+includes|book\s+fast|available\s+on\s+demand|on\s+demand|highly\s+demanded\s+model|all\s+time\s+highly\s+demanded|aa\+|7aaa?\s+premium\s+collection|full\s+store\s+article)\b`,
+    String.raw`^\s*(?:sizes?|size\s*eur|size\s*uk|size\s*us|dimensions?|length|height|width)\s*[:=\-]`,
+    String.raw`\b(deals\s+in\s+imported|our\s+instagram|join\s+our|whatsapp\s+community|multiple\s+payment\s+mode|all\s+products\s+can\s+be\s+seen|all\s+live\s+images|same\s+day\s+shipping|will\s+be\s+delivered\s+same\s+as|no\s+change\s+seen)\b`,
+    String.raw`\b(guaranteed\s+japan\s+movement|guaranteed\s+japanese\s+machinery|guaranteed\s+original\s+japanese|most\s+reliable\s+guaranteed)\b`,
+  ].join("|"),
+  "i",
+);
+
 export function sanitizeSupplierCaption(caption: string): string {
-  return caption
+  const emojiStripped = caption.replace(/[\p{Extended_Pictographic}\p{Regional_Indicator}\uFE0F\u20E3\u2600-\u27BF✅⚡🔥🛑😍✨🌟🛬✌️⚜️Ⓡ🅢ⓡ🅢🐊📏✔️💕🖤📦‼️▪️👇#*~_`]+/gu, " ");
+
+  const cleanLines = emojiStripped
     .split(/\r?\n/)
-    .map((line) => line.replace(/[*_~`#]/g, "").trim())
+    .map((line) => line.trim())
     .filter((line) => line.length > 3)
     .filter((line) => !SUPPLIER_COMMERCIAL_LINE.test(line))
-    .map((line) => line.charAt(0).toUpperCase() + line.slice(1))
+    .filter((line) => !PROMOTIONAL_OR_PACKAGING_LINE.test(line))
+    .map((line) => {
+      // Strip inline labels like "Product Name:", "Model :-", etc.
+      return line
+        .replace(/^\s*(?:product[- ]*(?:name|code|title)?|model[- ]*(?:name|no|code)?|item[- ]*(?:name|no|code)?|article[- ]*(?:name|no|code)?)\s*[:=\-#/.]*\s*/gi, "")
+        .trim();
+    })
+    .filter((line) => line.length > 2)
+    .map((line) => line.charAt(0).toUpperCase() + line.slice(1));
+
+  return cleanLines
     .join(" ")
     .replace(/\s{2,}/g, " ")
     .trim();
