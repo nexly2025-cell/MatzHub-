@@ -137,6 +137,46 @@ export async function getRelated(p: { id: string; categoryId: string | null; pri
     .limit(8) as Promise<ProductCard[]>;
 }
 
+/**
+ * Cross-category discovery. getRelated() only ever shows more of the same
+ * category, so a customer on a watch page never learns the store sells anything
+ * else. This surfaces pieces from OTHER categories that genuinely share an
+ * attribute - colour, material, or gender line - ranked by how many match, then
+ * by real trend. Grounded in real columns only; returns nothing when no other
+ * category shares an attribute, rather than showing a random product.
+ */
+export async function getCrossCategory(p: {
+  id: string;
+  categoryId: string | null;
+  color: string | null;
+  material: string | null;
+  gender: string;
+}) {
+  const colorMatches = sql`nullif(${products.color}::text, '') is not null and ${products.color}::text = ${p.color ?? ""}`;
+  const materialMatches = sql`nullif(${products.material}::text, '') is not null and ${products.material}::text = ${p.material ?? ""}`;
+  const genderMatches = sql`${products.gender} = ${p.gender}`;
+
+  const conditions = [
+    PUBLISHED,
+    ne(products.id, p.id),
+    p.categoryId ? ne(products.categoryId, p.categoryId) : sql`true`,
+    sql`(${colorMatches} or ${materialMatches} or ${genderMatches})`,
+  ];
+
+  const sharedAttributeCount = sql`(
+    case when ${colorMatches} then 1 else 0 end +
+    case when ${materialMatches} then 1 else 0 end +
+    case when ${genderMatches} then 1 else 0 end
+  )`;
+
+  return db
+    .select(productCard)
+    .from(products)
+    .where(and(...conditions))
+    .orderBy(desc(sharedAttributeCount), desc(products.trendingScore))
+    .limit(8) as Promise<ProductCard[]>;
+}
+
 export async function getProductReviews(productId: string) {
   return db
     .select()

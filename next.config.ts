@@ -9,6 +9,9 @@ const nextConfig: NextConfig = {
       { protocol: "https", hostname: "res.cloudinary.com" },
     ],
     deviceSizes: [360, 480, 640, 828, 1080, 1280, 1600],
+    // Supplier imagery is immutable once listed, so a long TTL keeps optimised
+    // derivatives warm at the edge for returning visitors instead of re-deriving.
+    minimumCacheTTL: 60 * 60 * 24 * 30,
   },
   poweredByHeader: false,
   async headers() {

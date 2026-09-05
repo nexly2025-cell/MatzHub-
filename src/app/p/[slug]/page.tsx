@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { categories, productVariants } from "@/db/schema";
-import { getProductBySlug, getProductReviews, getRelated } from "@/lib/queries";
+import { getCrossCategory, getProductBySlug, getProductReviews, getRelated } from "@/lib/queries";
 import { ProductRail } from "@/components/ProductCard";
 import ProductGallery from "@/components/ProductGallery";
 import BuyBox from "@/components/BuyBox";
@@ -36,11 +36,12 @@ export default async function ProductPage({ params }: Props) {
   const p = await getProductBySlug(slug);
   if (!p) notFound();
 
-  const [cat, variants, reviewRows, related] = await Promise.all([
+  const [cat, variants, reviewRows, related, crossCategory] = await Promise.all([
     p.categoryId ? db.select().from(categories).where(eq(categories.id, p.categoryId)).limit(1) : Promise.resolve([]),
     db.select().from(productVariants).where(eq(productVariants.productId, p.id)),
     getProductReviews(p.id),
     getRelated({ id: p.id, categoryId: p.categoryId, price: p.price }),
+    getCrossCategory({ id: p.id, categoryId: p.categoryId, color: p.color, material: p.material, gender: p.gender }),
   ]);
 
   const category = cat[0];
@@ -226,7 +227,20 @@ export default async function ProductPage({ params }: Props) {
             <p className="eyebrow mb-2">Same energy</p>
             <h2 className="font-display text-[26px] text-ink sm:text-[30px]">Pieces that pair with this one</h2>
           </div>
-          <ProductRail items={related} />
+          <ProductRail items={related} tight />
+        </section>
+      )}
+
+      {crossCategory.length > 0 && (
+        <section className="bg-canvas">
+          <div className="px-4 pt-12 sm:px-6 lg:px-10">
+            <p className="eyebrow mb-2">Elsewhere in the store</p>
+            {/* Deliberately unattributed: the rail is ranked by however many
+                attributes match, and naming one in the heading would assert a
+                relationship we did not verify. */}
+            <h2 className="font-display text-[26px] text-ink sm:text-[30px]">You may also like</h2>
+          </div>
+          <ProductRail items={crossCategory} tight />
         </section>
       )}
 

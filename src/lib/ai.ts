@@ -433,40 +433,273 @@ export function deterministicEnrich(input: EnrichmentInput): Enrichment {
 
 /* ---------------- LLM path (optional, non-blocking) ---------------- */
 
-const SYSTEM_PROMPT = `You are MatzHub's product merchandiser. You receive a raw WhatsApp message from a manufacturer and output ONLY minified JSON matching this shape:
-{"title":string,"subtitle":string,"description":string,"shortAnswer":string,"categorySlug":"watches"|"handbags"|"footwear"|"sunglasses"|"apparel","brand":string|null,"color":string|null,"material":string|null,"gender":"men"|"women"|"unisex","tags":string[],"specs":{},"faqs":[{"q":string,"a":string}],"seoTitle":string,"seoDescription":string,"altText":string,"variants":[{"label":string,"axis":"size"|"color"}],"costPrice":number,"mrp":number,"confidence":number}
-Rules: title <= 80 chars, no ALL CAPS, no emoji. description 90-140 words, factual, no invented brand claims. shortAnswer is one 40-55 word paragraph that directly answers "what is this product" for AI answer engines. seoTitle <= 60 chars. seoDescription <= 158 chars. 4 FAQs. costPrice is the lowest rupee figure in the message, mrp the highest (or 2.6x cost if only one). confidence 0-1.`;
+/* ------------------------------------------------------------------ *
+ * Category-aware captioning
+ * ------------------------------------------------------------------ *
+ * One generic template produces watch copy that talks about GSM and shoe
+ * copy that talks about sapphire crystal. Each category gets its own
+ * emphasis list, and every entry is something a supplier in that trade
+ * actually writes. Anything not on the list is not asked for.
+ */
+const CATEGORY_EMPHASIS: Record<string, string> = {
+  watches:
+    "Dial colour and detail, strap or bracelet material, case size, movement, and only features the message states (chronograph, water resistance, display caseback). Never mention crystal type, jewel count, accuracy, or country of origin unless stated.",
+  footwear:
+    "Shoe type (sneaker, loafer, oxford, sandal, boot), colour, upper material, sole material, and the stated size run. Never mention arch support, cushioning technology, or width fitting unless stated.",
+  apparel:
+    "Garment type, fabric, colour, fit, and stated sizes. Never mention GSM unless the number is in the message. Never mention weave, stitching, shrinkage, or care instructions unless stated.",
+  perfumes:
+    "Fragrance name if given, stated notes, concentration (EDP/EDT/attar) and volume in ml. Never invent notes, longevity hours, projection, sillage, or season unless stated.",
+  handbags:
+    "Bag type (tote, sling, clutch, briefcase, backpack), material, colour, closure, compartment count and dimensions only if stated. Never mention lining, hardware finish, or laptop fit unless stated.",
+  sunglasses:
+    "Frame style (aviator, wayfarer, round, square), frame material, lens information (polarised, UV400) and colour. Never mention lens coating, hinge type, or prescription compatibility unless stated.",
+};
 
-async function llmEnrich(input: EnrichmentInput, timeoutMs = 9000): Promise<Partial<Enrichment> | null> {
-  const key = process.env.OPENAI_API_KEY;
+const CATEGORY_TONE: Record<string, string> = {
+  watches: "precise and technical, like a well-informed salesperson turning the watch over in their hand",
+  footwear: "warm and descriptive about the finish, without overselling comfort",
+  apparel: "simple and tactile, about how the fabric feels and drapes",
+  perfumes: "evocative about the stated notes only, never about performance claims",
+  handbags: "practical and structured, describing shape and carry",
+  sunglasses: "graphic and clean, about silhouette and lens",
+};
+
+const ANTI_FABRICATION_RULES = `
+HARD RULES - VIOLATION MAKES THE OUTPUT UNUSABLE:
+1. You may ONLY rephrase information that is literally present in the supplier message. You are a copy editor, not a researcher.
+2. NEVER invent, infer, extrapolate or "improve" any of: brand, model, material, movement, dimensions, weight, features, specifications, country of origin, warranty, authenticity, availability, quantity, condition, or any technical claim.
+3. If a detail is absent from the message, OMIT it entirely. Do not write "premium", "high quality", "durable", "long lasting", "water resistant", "Japanese", "imported", "genuine" or any similar qualifier to fill a gap.
+4. No marketing superlatives, no exclamation marks, no emoji, no ALL CAPS.
+5. Every claim in your output must be traceable to a word or number in the message. When unsure, leave it out.
+`;
+
+const JSON_SHAPE =
+  '{"title":string,"subtitle":string,"description":string,"shortAnswer":string,"categorySlug":"watches"|"handbags"|"footwear"|"sunglasses"|"apparel"|"perfumes","brand":string|null,"color":string|null,"material":string|null,"gender":"men"|"women"|"unisex","tags":string[],"specs":{},"faqs":[{"q":string,"a":string}],"seoTitle":string,"seoDescription":string,"altText":string,"variants":[{"label":string,"axis":"size"|"color"}],"costPrice":number,"mrp":number,"confidence":number}';
+
+/**
+ * Builds the prompt for one category. The attributes the deterministic
+ * extractor already found are appended as grounding, so the model is never
+ * asked to guess - it is shown exactly what it may describe.
+ */
+function buildPrompt(input: EnrichmentInput, grounded: Enrichment): string {
+  const slug = grounded.categorySlug;
+  const emphasis = CATEGORY_EMPHASIS[slug] ?? "Only the attributes explicitly present in the message.";
+  const tone = CATEGORY_TONE[slug] ?? "clean, factual, restrained";
+
+  const detected: Record<string, string> = {};
+  if (grounded.brand) detected.brand = grounded.brand;
+  if (grounded.color) detected.colour = grounded.color;
+  if (grounded.material) detected.material = grounded.material;
+  if (grounded.gender) detected.gender = grounded.gender;
+  const sourceSpecs = Object.entries(grounded.specs).filter(
+    ([k]) => k !== "Category" && k !== "Gender" && k !== "Delivery" && k !== "Sourcing",
+  );
+  if (sourceSpecs.length) detected.detectedAttributes = sourceSpecs.map(([k, v]) => `${k}: ${v}`).join("; ");
+
+  return [
+    `Category: ${slug}`,
+    `Tone: ${tone}`,
+    "",
+    `Emphasise ONLY these attributes for this category: ${emphasis}`,
+    "",
+    "Facts already extracted from the message (the only attributes you may describe):",
+    Object.keys(detected).length ? JSON.stringify(detected) : "(none beyond the message text itself)",
+    "",
+    "Supplier message (verbatim; may contain pricing and stock notes - never repeat those):",
+    input.caption,
+    "",
+    `Return ONLY minified JSON matching exactly: ${JSON_SHAPE}`,
+    "Constraints: title <= 80 chars. description 70-120 words, grounded entirely in the message. shortAnswer is one 30-45 word paragraph answering \"what is this product\" for AI answer engines. seoTitle <= 60 chars. seoDescription <= 158 chars. 4 FAQs, each answer grounded in the message or in MatzHub's pan-India dispatch and 7-day replacement policy. costPrice is the lowest rupee figure in the message, mrp the highest. confidence 0-1 reflecting how complete the message was.",
+  ].join("\n");
+}
+
+/**
+ * Grounding filter - the real enforcement layer.
+ *
+ * Prompt rules alone cannot be trusted to stop fabrication. Any spec the model
+ * returns is dropped unless its value is traceable to the source caption
+ * (case- and punctuation-insensitive containment). Computed rows are always
+ * allowed because they are MatzHub policy, not product claims.
+ */
+const COMPUTED_SPEC_KEYS = new Set(["Category", "Gender", "Delivery", "Sourcing", "Brand", "Colour", "Material"]);
+
+function groundSpecs(sourceCaption: string, specs: Record<string, string> | undefined): Record<string, string> {
+  if (!specs || typeof specs !== "object") return {};
+  const haystack = String(sourceCaption || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9x. ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(specs)) {
+    const key = String(rawKey).slice(0, 40);
+    const value = String(rawValue ?? "").slice(0, 120);
+    if (!key || !value) continue;
+    if (COMPUTED_SPEC_KEYS.has(key)) {
+      out[key] = value;
+      continue;
+    }
+    const needle = value.toLowerCase().replace(/[^a-z0-9x. ]+/g, " ").replace(/\s+/g, " ").trim();
+    if (needle && haystack.includes(needle)) out[key] = value;
+  }
+  return out;
+}
+
+/**
+ * Trade abbreviations a supplier actually writes, mapped to the wording a copy
+ * editor would use, so a legitimate expansion counts as grounded: a caption
+ * reading "Royal Oud EDP 100ml" may become "eau de parfum".
+ */
+const ABBREVIATION_EXPANSIONS: Array<{ re: RegExp; expansion: string }> = [
+  { re: /\bedp\b/gi, expansion: "eau de parfum edp" },
+  { re: /\bedt\b/gi, expansion: "eau de toilette edt" },
+  { re: /\bedc\b/gi, expansion: "eau de cologne edc" },
+  { re: /\bparfum\b/gi, expansion: "parfum eau de parfum" },
+  { re: /\buv\s?400\b/gi, expansion: "uv400 uv 400 ultraviolet" },
+  { re: /\buv\s?protected\b/gi, expansion: "uv protected ultraviolet" },
+  { re: /\bpolaris(?:ed|z)ed\b/gi, expansion: "polarised polarized" },
+  { re: /\bwr\s?(\d+)?\b/gi, expansion: "water resistant wr" },
+  { re: /\bss\b/gi, expansion: "stainless steel ss" },
+  { re: /\blth?r\b/gi, expansion: "leather lthr" },
+];
+
+function expandAbbreviations(text: string): string {
+  let out = String(text || "");
+  for (const { re, expansion } of ABBREVIATION_EXPANSIONS) out = out.replace(re, ` ${expansion} `);
+  return out.toLowerCase();
+}
+
+/**
+ * Prose grounding. groundSpecs() covers structured specs, but the model writes
+ * prose too, and prose is where fabrication shows up: given "Casio watch black
+ * dial stainless steel strap" the model volunteered "featuring a precise quartz
+ * movement". This scans the vocabulary that carries a technical claim; if a
+ * term is used that the supplier did not write, the caller discards the
+ * model-authored text for that field.
+ */
+const TECHNICAL_CLAIM_TERMS: Array<string> = [
+  "quartz", "automatic", "mechanical", "kinetic", "chronometer", "tourbillon", "skeleton",
+  "sapphire crystal", "mineral crystal", "hardlex", "gorilla glass", "scratch resistant",
+  "water resistant", "waterproof", "water resistance", "atm", "ip65", "ip66", "ip67", "ip68",
+  "japanese", "swiss", "swiss made", "german made", "italian made", "made in japan", "made in italy", "made in switzerland",
+  "warranty", "guarantee", "guaranteed",
+  "jewel", "jewels", "per day", "power reserve",
+  "polarised", "polarized", "uv400", "uv 400", "anti reflective", "anti-reflective", "blue light",
+  "gsm", "thread count", "pre shrunk", "pre-shrunk", "shrink resistant",
+  "long lasting", "long-lasting", "projection", "sillage", "parfum intensity",
+  "full grain", "top grain", "genuine italian leather", "vegetable tanned",
+];
+
+const claimTermPattern = (term: string) =>
+  new RegExp(`(?<![a-z])${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z])`, "i");
+
+const COMPILED_CLAIM_PATTERNS = TECHNICAL_CLAIM_TERMS.map((t) => ({ term: t, re: claimTermPattern(t) }));
+
+/** Returns the technical terms used in `text` that are absent from `caption`. */
+export function ungroundedClaims(caption: string, text: string): string[] {
+  const source = expandAbbreviations(caption);
+  const haystack = String(text || "");
+  const found: string[] = [];
+  for (const { term, re } of COMPILED_CLAIM_PATTERNS) {
+    if (re.test(haystack) && !re.test(source)) found.push(term);
+  }
+  return found;
+}
+
+/* ------------- Gemini captioning (primary and only provider) -------------
+ * Reads only GEMINI_API_KEY. Never blocks ingestion: any failure returns null
+ * and the deterministic extractor has already produced a complete, publishable
+ * record, so the product still ships.
+ */
+
+const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
+// Chosen by live measurement: gemini-2.0-flash and gemini-2.5-flash are retired
+// (404) and gemini-3.6-flash exceeded the ingestion budget. This returns
+// complete caption JSON in ~2-5s. Override with GEMINI_MODEL if needed.
+const GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite";
+
+// Successful calls cluster under 5s but latency varies; 15s bounds ingestion
+// while letting the majority complete. Override with GEMINI_TIMEOUT_MS.
+const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 15000;
+
+/** In-process memoisation: identical source content is captioned once. */
+const enrichmentCache = new Map<string, Partial<Enrichment> | null>();
+const ENRICHMENT_CACHE_MAX = 200;
+
+function enrichmentCacheKey(input: EnrichmentInput, grounded: Enrichment): string {
+  return `${grounded.categorySlug}::${(input.caption || "").trim()}::${input.imageUrl ? "img" : "noimg"}`;
+}
+
+function rememberEnrichment(key: string, value: Partial<Enrichment> | null): void {
+  if (enrichmentCache.size >= ENRICHMENT_CACHE_MAX) {
+    const oldest = enrichmentCache.keys().next().value;
+    if (oldest !== undefined) enrichmentCache.delete(oldest);
+  }
+  enrichmentCache.set(key, value);
+}
+
+async function llmEnrich(
+  input: EnrichmentInput,
+  grounded: Enrichment,
+  timeoutMs = GEMINI_TIMEOUT_MS,
+): Promise<Partial<Enrichment> | null> {
+  const key = process.env.GEMINI_API_KEY;
   if (!key) return null;
 
+  const cacheKey = enrichmentCacheKey(input, grounded);
+  if (enrichmentCache.has(cacheKey)) return enrichmentCache.get(cacheKey) ?? null;
+
+  const model = process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   try {
-    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+    const res = await fetch(`${GEMINI_ENDPOINT}/${model}:generateContent`, {
       method: "POST",
       signal: controller.signal,
-      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
-        model: process.env.OPENAI_MODEL || "gpt-4o-mini",
-        temperature: 0.3,
-        response_format: { type: "json_object" },
-        messages: [
-          { role: "system", content: SYSTEM_PROMPT },
-          {
-            role: "user",
-            content: `Group: ${input.groupName ?? "unknown"}\nHas image: ${Boolean(input.imageUrl)}\nMessage:\n${input.caption}`,
-          },
-        ],
+        // Low temperature keeps the model editing rather than imagining. Cap is
+        // deliberately tight: a complete caption payload measures ~600 chars,
+        // and a larger cap measurably increases latency without longer output.
+        generationConfig: { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 1024 },
+        systemInstruction: {
+          parts: [
+            {
+              text:
+                "You are MatzHub's product copy editor. You receive one raw WhatsApp message from a manufacturer and rewrite it into clean, restrained, premium e-commerce copy." +
+                ANTI_FABRICATION_RULES +
+                "Your output is machine-parsed: return ONLY valid minified JSON, no markdown fence, no commentary.",
+            },
+          ],
+        },
+        contents: [{ role: "user", parts: [{ text: buildPrompt(input, grounded) }] }],
       }),
     });
-    if (!res.ok) return null;
-    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-    const raw = json.choices?.[0]?.message?.content;
-    if (!raw) return null;
-    return JSON.parse(raw) as Partial<Enrichment>;
+
+    if (!res.ok) {
+      rememberEnrichment(cacheKey, null);
+      return null;
+    }
+
+    const json = (await res.json()) as {
+      candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+    };
+    const raw = json.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
+    const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+    if (!cleaned) {
+      rememberEnrichment(cacheKey, null);
+      return null;
+    }
+
+    const parsed = JSON.parse(cleaned) as Partial<Enrichment>;
+    parsed.specs = groundSpecs(input.caption, parsed.specs);
+    rememberEnrichment(cacheKey, parsed);
+    return parsed;
   } catch {
+    rememberEnrichment(cacheKey, null);
     return null;
   } finally {
     clearTimeout(timer);
@@ -478,23 +711,48 @@ const clampStr = (v: unknown, max: number, fallback: string) =>
 
 const VALID_CATS = new Set(CATEGORY_RULES.map((r) => r.slug));
 
+/**
+ * True when `value` is present in the source caption (or is null/empty). Stops
+ * the model substituting a brand, colour or material the supplier never wrote -
+ * the single most damaging fabrication, because it turns a generic piece into a
+ * branded one.
+ */
+function traceableToSource(value: string | null | undefined, caption: string): boolean {
+  if (value === null || value === undefined || String(value).trim() === "") return true;
+  const haystack = String(caption || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const needle = String(value).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  if (!needle) return true;
+  return haystack.includes(needle);
+}
+
 /** Main entrypoint: LLM-first with guaranteed deterministic fallback + validation. */
 export async function enrichProduct(input: EnrichmentInput): Promise<Enrichment> {
   const t0 = Date.now();
   const base = deterministicEnrich(input);
-  const ai = await llmEnrich(input);
+  // `base` is both the fallback and the grounding source: the model is shown
+  // only the attributes already extracted from the caption.
+  const ai = await llmEnrich(input, base);
   if (!ai) return { ...base, latencyMs: Date.now() - t0 };
+
+  // Prose grounding. specs are already filtered by groundSpecs(); this covers
+  // description / shortAnswer / subtitle, where an ungrounded technical claim
+  // reads as a product fact. If the model used a term the supplier never wrote,
+  // its prose for that field is discarded wholesale rather than partially
+  // rewritten - a half-filtered sentence would still imply the claim.
+  const descriptionClaims = ungroundedClaims(input.caption, String(ai.description ?? ""));
+  const shortAnswerClaims = ungroundedClaims(input.caption, String(ai.shortAnswer ?? ""));
+  const subtitleClaims = ungroundedClaims(input.caption, String(ai.subtitle ?? ""));
 
   const merged: Enrichment = {
     ...base,
     title: clampStr(ai.title, 90, base.title),
-    subtitle: clampStr(ai.subtitle, 120, base.subtitle),
-    description: clampStr(ai.description, 2000, base.description),
-    shortAnswer: clampStr(ai.shortAnswer, 600, base.shortAnswer),
+    subtitle: subtitleClaims.length ? base.subtitle : clampStr(ai.subtitle, 120, base.subtitle),
+    description: descriptionClaims.length ? base.description : clampStr(ai.description, 2000, base.description),
+    shortAnswer: shortAnswerClaims.length ? base.shortAnswer : clampStr(ai.shortAnswer, 600, base.shortAnswer),
     categorySlug: typeof ai.categorySlug === "string" && VALID_CATS.has(ai.categorySlug) ? ai.categorySlug : base.categorySlug,
-    brand: typeof ai.brand === "string" ? titleCase(ai.brand).slice(0, 40) : base.brand,
-    color: typeof ai.color === "string" ? titleCase(ai.color).slice(0, 30) : base.color,
-    material: typeof ai.material === "string" ? titleCase(ai.material).slice(0, 40) : base.material,
+    brand: typeof ai.brand === "string" && traceableToSource(ai.brand, input.caption) ? titleCase(ai.brand).slice(0, 40) : base.brand,
+    color: typeof ai.color === "string" && traceableToSource(ai.color, input.caption) ? titleCase(ai.color).slice(0, 30) : base.color,
+    material: typeof ai.material === "string" && traceableToSource(ai.material, input.caption) ? titleCase(ai.material).slice(0, 40) : base.material,
     gender: ai.gender === "men" || ai.gender === "women" ? ai.gender : base.gender,
     tags: Array.isArray(ai.tags) ? ai.tags.filter((t) => typeof t === "string").slice(0, 12) : base.tags,
     specs: ai.specs && typeof ai.specs === "object" ? { ...base.specs, ...(ai.specs as Record<string, string>) } : base.specs,
@@ -506,7 +764,8 @@ export async function enrichProduct(input: EnrichmentInput): Promise<Enrichment>
     costPrice: Number.isFinite(ai.costPrice) && Number(ai.costPrice) > 0 ? Math.round(Number(ai.costPrice)) : base.costPrice,
     mrp: Number.isFinite(ai.mrp) && Number(ai.mrp) > 0 ? Math.round(Number(ai.mrp)) : base.mrp,
     confidence: Number.isFinite(ai.confidence) ? Math.min(1, Math.max(0, Number(ai.confidence))) : base.confidence,
-    model: process.env.OPENAI_MODEL || "gpt-4o-mini",
+    // Provenance label mirrors the provider used above.
+    model: process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL,
     latencyMs: Date.now() - t0,
   };
   return { ...merged, qualityScore: qualityScore(merged, Boolean(input.imageUrl)) };

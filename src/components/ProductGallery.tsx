@@ -29,7 +29,10 @@ export default function ProductGallery({
   const [active, setActive] = useState(0);
   const [zoom, setZoom] = useState(false);
   const [lens, setLens] = useState({ x: 50, y: 50 });
-  const [showVideo, setShowVideo] = useState(hasVideo);
+  // Images always open the gallery. Video is a deliberate second step the
+  // shopper chooses - never the default view. (Previously initialised to
+  // `hasVideo`, so a product with a video opened straight into the video.)
+  const [showVideo, setShowVideo] = useState(false);
   const current = all[active] ?? all[0];
 
   const onMove = (e: React.MouseEvent<HTMLDivElement>) => {
@@ -101,18 +104,18 @@ export default function ProductGallery({
         )}
       </div>
 
-      {all.length > 1 && (
-        <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar pb-1" role="tablist" aria-label="Product images">
+      {(all.length > 1 || hasVideo) && (
+        <div className="mt-3 flex gap-2 overflow-x-auto no-scrollbar pb-1" role="tablist" aria-label="Product media">
           {all.map((src, i) => (
             <button
               key={i}
               type="button"
               role="tab"
               aria-selected={active === i && !showVideo}
-              aria-label={hasVideo && i === 0 ? `Frame ${i + 1}` : `Image ${i + 1}`}
+              aria-label={`Image ${i + 1} of ${all.length}`}
               onClick={() => {
                 setActive(i);
-                if (hasVideo) setShowVideo(false);
+                setShowVideo(false);
               }}
               className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border-2 transition-all ${
                 active === i && !showVideo ? "border-[#c9a227]" : "border-transparent opacity-60 hover:opacity-100"
@@ -121,6 +124,21 @@ export default function ProductGallery({
               <Image src={src} alt="" fill sizes="64px" className="object-cover" />
             </button>
           ))}
+          {hasVideo && videoUrl && (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={showVideo}
+              aria-label="Play product video"
+              onClick={() => setShowVideo(true)}
+              className={`relative h-16 w-16 shrink-0 overflow-hidden rounded-lg border-2 transition-all ${
+                showVideo ? "border-[#c9a227]" : "border-transparent opacity-60 hover:opacity-100"
+              }`}
+            >
+              <Image src={heroImage} alt="" fill sizes="64px" className="object-cover" />
+              <span className="absolute inset-0 grid place-items-center bg-black/45 text-[13px] text-white">▶</span>
+            </button>
+          )}
         </div>
       )}
     </div>

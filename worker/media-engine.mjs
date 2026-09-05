@@ -68,6 +68,30 @@ export async function optimiseImage(buffer, { minQuality = 38, maxWidth = 1200 }
 }
 
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* Category-aware frame budget                                         */
+/* ------------------------------------------------------------------ */
+/**
+ * How many candidate frames to pull from a video, per category. A watch or
+ * pair of sunglasses is one static object filmed from one or two angles, so a
+ * single sharp still plus the video is the complete listing; footwear and
+ * apparel are shot from several sides so more candidates help. Maxima, not
+ * targets: the sharpness filter still drops blurry/duplicate frames.
+ */
+export const FRAME_BUDGET = Object.freeze({
+  watches: 1,
+  sunglasses: 1,
+  perfumes: 2,
+  handbags: 2,
+  footwear: 3,
+  apparel: 3,
+});
+
+export function framesForCategory(category) {
+  const key = String(category || "").toLowerCase().trim();
+  return FRAME_BUDGET[key] ?? 2;
+}
+
 /* video: extract candidate frames, transcode light mp4                 */
 /* ------------------------------------------------------------------ */
 export async function processVideo(buffer, { frames = 4, transcodeAboveMB = 12 } = {}) {
@@ -178,6 +202,6 @@ export async function processImages(buffers) {
   return refined.sort((a, b) => a.index - b.index).map((k) => k.webp);
 }
 
-const mediaEngine = { optimiseImage, processVideo, processImages, sharpness };
+const mediaEngine = { optimiseImage, processVideo, processImages, sharpness, framesForCategory };
 
 export default mediaEngine;

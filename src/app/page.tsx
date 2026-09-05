@@ -52,6 +52,7 @@ export default async function Home() {
         <div className="shell grid items-center gap-10 py-12 sm:py-16 lg:grid-cols-[1fr_1fr] lg:gap-16 lg:py-24">
           <div className="order-2 lg:order-1">
             <p className="eyebrow mb-5">Imported master-quality · since 2017</p>
+            <p className="eyebrow mb-5">Curated imports · Priced from real cost</p>
             <h1 className="display text-[clamp(2.4rem,9vw,4.4rem)]">
               Master quality,
               <br />

@@ -682,20 +682,27 @@ async function start() {
           continue; // the timer handles publishing
         }
 
+        // Resolved before the video branch: the frame budget depends on the
+        // category this group maps to, so the supplier's trade decides how many
+        // stills are worth extracting rather than a fixed count for everyone.
+        const mappedCategory = getMappedCategory(jid, groupName);
+
         let media = { imageUrl: null, imageUrls: undefined, mediaType: "image", videoUrl: null };
         if (videoMsg) {
           // VIDEO WORKFLOW (footwear + watches): keep the mp4, generate frames.
+          // Category-aware budget - see media-engine FRAME_BUDGET.
           const raw = await downloadMediaMessage(m, "buffer", {});
           if (raw && raw.length <= 40 * 1024 * 1024) {
-            const { videoBuffer, frames } = await mediaEngine.processVideo(raw);
+            const frameBudget = mediaEngine.framesForCategory
+              ? mediaEngine.framesForCategory(mappedCategory)
+              : 2;
+            const { videoBuffer, frames } = await mediaEngine.processVideo(raw, { frames: frameBudget });
             const videoUrl = await hostVideo(videoBuffer);
             const frameUrls = [];
             for (const f of frames) frameUrls.push(await hostImage(f, "image/webp", "webp"));
             media = { imageUrl: frameUrls[0] ?? null, imageUrls: frameUrls, mediaType: "video", videoUrl };
           }
         }
-
-        const mappedCategory = getMappedCategory(jid, groupName);
         const payload = {
           messageId: m.key.id,
           groupId: jid,

@@ -76,11 +76,31 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
 
         </div>
 
-        <div className="space-y-1 pt-3">
-          <h3 className="line-clamp-2 text-[13.5px] font-medium leading-snug text-ink sm:text-sm">{p.title}</h3>
-          <p className="line-clamp-1 text-[12px] text-muted">{[p.brand, p.color].filter(Boolean).join(" · ")}</p>
-          {/* Single honest price on the grid. The comparison lives on the detail page. */}
-          <p className="pt-0.5 font-display text-[19px] text-ink">{inr(p.price)}</p>
+        <div className="pt-3">
+          {/* Reserve two lines so a long title cannot stagger the grid rows. */}
+          <h3 className="flex h-[2.6em] items-start text-[13.5px] font-medium leading-[1.3] text-ink sm:text-sm">
+            <span className="line-clamp-2">{p.title}</span>
+          </h3>
+
+          <div className="mt-1 flex min-h-[1.1rem] items-center gap-1.5">
+            {[p.brand, p.color].filter(Boolean).length > 0 && (
+              <p className="line-clamp-1 text-[11.5px] uppercase tracking-[0.06em] text-subtle">
+                {[p.brand, p.color].filter(Boolean).join(" · ")}
+              </p>
+            )}
+            {/* Real aggregate rating only. ratingCount is 0 for a product with
+                no published reviews, so this never shows a fabricated score. */}
+            {p.ratingCount > 0 && (
+              <p className="ml-auto shrink-0 text-[11px] text-muted tabular-nums">
+                <span className="text-accent">★</span> {p.ratingAvg.toFixed(1)}
+                <span className="text-subtle"> ({p.ratingCount})</span>
+              </p>
+            )}
+          </div>
+
+          {/* Single honest price on the grid; comparison lives on the detail
+              page. tabular-nums aligns a column of prices optically. */}
+          <p className="mt-2 font-display text-[19px] leading-none text-ink tabular-nums">{inr(p.price)}</p>
         </div>
       </Link>
     </article>
@@ -105,10 +125,13 @@ export function ProductGrid({ items, priorityCount = 4 }: { items: PC[]; priorit
   );
 }
 
-export function ProductRail({ items, heading }: { items: PC[]; heading?: string }) {
+export function ProductRail({ items, heading, tight = false }: { items: PC[]; heading?: string; tight?: boolean }) {
   if (!items.length) return null;
   return (
-    <section className="py-12">
+    /* `tight` is for rails whose parent section already owns the vertical
+       rhythm and heading - the product page does both, so a fixed py-12 stacked
+       ~96px of dead air above the cards. */
+    <section className={tight ? "pb-10 pt-1" : "py-12"}>
       <div className="mb-6 flex items-end justify-between gap-4 px-4 sm:px-6 lg:px-10">
         {heading && <h2 className="font-display text-2xl text-ink sm:text-3xl">{heading}</h2>}
       </div>

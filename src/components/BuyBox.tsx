@@ -96,7 +96,7 @@ export default function BuyBox({
 
         <div className="mt-5">
           <div className="flex flex-wrap items-baseline gap-3">
-            <p className="font-display text-[34px] leading-none text-ink">{inr(p.price)}</p>
+            <p className="font-display text-[34px] leading-none text-ink tabular-nums">{inr(p.price)}</p>
             {off > 0 && (
               <>
                 <span className="text-[13px] text-subtle line-through">{inr(p.mrp)}</span>
