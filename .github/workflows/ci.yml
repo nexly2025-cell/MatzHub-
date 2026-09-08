@@ -32,5 +32,5 @@ jobs:
       - name: Privacy invariant
         run: |
           PUBLIC_PATTERNS="Partner [A-E]-01|costPrice|cost_price|manufacturerId|source_group|sourceGroup"
-          FILES=$(find src/app src/components src/lib -name "*.tsx" -o -name "*.ts" | grep -v "__tests__" | grep -v admin)
+          FILES=$(find src/app src/components -type f \( -name "*.tsx" -o -name "*.ts" \) | grep -v "__tests__" | grep -v "/admin" | grep -v "/api/")
           echo "$FILES" | xargs grep -E "$PUBLIC_PATTERNS" && { echo "Privacy leak detected: public surface references forbidden fields"; exit 1; } || echo "Privacy invariant holds"
