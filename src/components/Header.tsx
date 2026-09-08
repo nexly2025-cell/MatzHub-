@@ -8,6 +8,7 @@ import { getWishlist, subscribe, anonId, getCart } from "@/lib/client-store";
 
 const NAV = [
   { href: "/", label: "Home" },
+  { href: "/products", label: "All" },
   { href: "/c/watches", label: "Watches" },
   { href: "/c/handbags", label: "Handbags" },
   { href: "/c/footwear", label: "Footwear" },

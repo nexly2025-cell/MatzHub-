@@ -1,6 +1,6 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db } from "@/db";
-import { categories, coupons, settings } from "@/db/schema";
+import { categories, coupons, manufacturers, products, settings } from "@/db/schema";
 
 /**
  * Production bootstrap — taxonomy and pricing rules only.
@@ -158,5 +158,105 @@ export async function bootstrapTaxonomy() {
     .onConflictDoNothing();
 
   const [any] = await db.select({ slug: categories.slug }).from(categories).where(eq(categories.slug, "watches")).limit(1);
-  return { categoriesCreated: created, taxonomyReady: Boolean(any) };
+  const demo = await seedPreviewCatalog();
+  return { categoriesCreated: created, taxonomyReady: Boolean(any), ...demo };
+}
+
+export async function seedPreviewCatalog() {
+  const [{ n }] = await db.select({ n: sql<number>`count(*)::int` }).from(products);
+  if (n > 0) return { productsCreated: 0 };
+
+  const [mfr] = await db
+    .insert(manufacturers)
+    .values({
+      name: "MatzHub Atelier",
+      slug: "matzhub-atelier",
+      city: "Tumakuru",
+      autoPublish: true,
+      status: "active",
+    })
+    .onConflictDoNothing()
+    .returning();
+  const supplier =
+    mfr ??
+    (await db.select().from(manufacturers).where(eq(manufacturers.slug, "matzhub-atelier")).limit(1))[0];
+  if (!supplier) return { productsCreated: 0 };
+
+  const cats = await db.select().from(categories);
+  const bySlug = Object.fromEntries(cats.map((c) => [c.slug, c.id]));
+
+  const DEMO: Array<{
+    slug: string;
+    sku: string;
+    title: string;
+    cat: string;
+    brand: string;
+    color: string;
+    cost: number;
+    photo: number;
+    tags: string[];
+  }> = [
+    { slug: "steel-chronograph-42", sku: "MH-WAT-001", title: "Steel Chronograph 42mm", cat: "watches", brand: "Atelier", color: "Silver", cost: 2490, photo: 190819, tags: ["watch", "steel", "chrono"] },
+    { slug: "minimal-black-dial", sku: "MH-WAT-002", title: "Minimal Black Dial", cat: "watches", brand: "Atelier", color: "Black", cost: 1890, photo: 277390, tags: ["watch", "minimal"] },
+    { slug: "structured-tote-tan", sku: "MH-BAG-001", title: "Structured Tote in Tan", cat: "handbags", brand: "Atelier", color: "Tan", cost: 2190, photo: 1152077, tags: ["tote", "leather"] },
+    { slug: "evening-clutch-black", sku: "MH-BAG-002", title: "Evening Clutch", cat: "handbags", brand: "Atelier", color: "Black", cost: 1290, photo: 904350, tags: ["clutch"] },
+    { slug: "court-sneaker-white", sku: "MH-FTW-001", title: "Court Sneaker", cat: "footwear", brand: "Atelier", color: "White", cost: 2590, photo: 2529148, tags: ["sneaker"] },
+    { slug: "oxford-leather-brown", sku: "MH-FTW-002", title: "Leather Oxford", cat: "footwear", brand: "Atelier", color: "Brown", cost: 2890, photo: 1598505, tags: ["oxford", "formal"] },
+    { slug: "aviator-uv400", sku: "MH-SUN-001", title: "Aviator UV400", cat: "sunglasses", brand: "Atelier", color: "Gold", cost: 990, photo: 701877, tags: ["aviator", "uv400"] },
+    { slug: "wayfarer-acetate", sku: "MH-SUN-002", title: "Acetate Wayfarer", cat: "sunglasses", brand: "Atelier", color: "Black", cost: 890, photo: 46710, tags: ["wayfarer"] },
+    { slug: "heavyweight-tee-ink", sku: "MH-APP-001", title: "Heavyweight Tee", cat: "apparel", brand: "Atelier", color: "Ink", cost: 790, photo: 1043474, tags: ["tee", "cotton"] },
+    { slug: "overshirt-olive", sku: "MH-APP-002", title: "Olive Overshirt", cat: "apparel", brand: "Atelier", color: "Olive", cost: 1690, photo: 297933, tags: ["overshirt"] },
+    { slug: "oud-edp-100", sku: "MH-PRF-001", title: "Oud EDP 100ml", cat: "perfumes", brand: "Atelier", color: "Amber", cost: 1490, photo: 965989, tags: ["oud", "edp"] },
+    { slug: "citrus-musk-50", sku: "MH-PRF-002", title: "Citrus Musk 50ml", cat: "perfumes", brand: "Atelier", color: "Clear", cost: 990, photo: 1961792, tags: ["citrus", "musk"] },
+  ];
+
+  let productsCreated = 0;
+  for (const d of DEMO) {
+    const categoryId = bySlug[d.cat];
+    if (!categoryId) continue;
+    const mrp = Math.round(d.cost * 1.4);
+    const price = Math.round(d.cost * 1.15);
+    const hero = px(d.photo, 100);
+    const [row] = await db
+      .insert(products)
+      .values({
+        slug: d.slug,
+        sku: d.sku,
+        title: d.title,
+        subtitle: `${d.brand} · ${d.color}`,
+        description: `${d.title} from the MatzHub atelier line. Quality-scored before listing. Honest pricing from real manufacturer cost.`,
+        shortAnswer: `${d.title} — imported master quality, priced from cost.`,
+        categoryId,
+        manufacturerId: supplier.id,
+        brand: d.brand,
+        color: d.color,
+        gender: "unisex",
+        tags: d.tags,
+        specs: { Brand: d.brand, Colour: d.color },
+        images: [hero],
+        heroImage: hero,
+        altText: d.title,
+        costPrice: d.cost,
+        mrp,
+        price,
+        resellerPrice: price,
+        stockQty: 12,
+        availability: "in_stock",
+        status: "published",
+        qualityScore: 86,
+        confidence: 0.9,
+        seoTitle: `${d.title} | MatzHub`,
+        seoDescription: `Buy ${d.title} on MatzHub. Honest pricing, pan-India delivery, 7-day replacement.`,
+        publishedAt: new Date(),
+        trendingScore: 10 + productsCreated,
+        messageId: `demo-${d.sku}`,
+        contentHash: `demo-content-${d.sku}`,
+        imageHash: `demo-image-${d.sku}`,
+      })
+      .onConflictDoNothing()
+      .returning({ id: products.id });
+    if (row) productsCreated += 1;
+  }
+
+  return { productsCreated };
 }

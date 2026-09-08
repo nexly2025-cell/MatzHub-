@@ -38,6 +38,8 @@
   ],
   "exclude": [
     "node_modules",
-    "src/edge"
+    "src/edge",
+    "src/lib/__tests__",
+    "worker"
   ]
 }

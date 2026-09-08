@@ -1,9 +1,27 @@
 import Link from "next/link";
 import Image from "next/image";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { ADMIN_COOKIE, CSRF_COOKIE, loadAdminSession, timingSafeEqual, verifyAdminToken } from "@/lib/auth";
 import { getAdminSnapshot } from "@/lib/queries";
 import { relativeTime } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
+
+async function requireOpsSession() {
+  const jar = await cookies();
+  const token = jar.get(ADMIN_COOKIE)?.value;
+  const csrf = jar.get(CSRF_COOKIE)?.value;
+  const session = await loadAdminSession(token).catch(() => null);
+  if (session) {
+    if (csrf && !timingSafeEqual(session.csrfToken, csrf)) redirect("/admin/login?error=1");
+    return session;
+  }
+  // HMAC-only cookies (pre-migration) are accepted outside production so a
+  // rolling deploy does not lock operators out for 24h.
+  if (process.env.NODE_ENV !== "production" && (await verifyAdminToken(token))) return null;
+  redirect("/admin/login");
+}
 
 const SEV: Record<string, string> = {
   critical: "border-[--color-rose] text-[--color-rose]",
@@ -13,14 +31,19 @@ const SEV: Record<string, string> = {
 };
 
 export default async function AdminHome() {
+  const session = await requireOpsSession();
   const s = await getAdminSnapshot();
   const stages = Object.fromEntries(s.ingest.map((r) => [r.stage, r.c]));
+  const hoursLeft = session
+    ? Math.max(0, Math.round((session.expiresAt.getTime() - Date.now()) / 3_600_000))
+    : 24;
 
   return (
     <div className="shell py-8">
-      <h1 className="display text-3xl mb-1">Command</h1>
+      <h1 className="display mb-1 text-3xl">Command</h1>
       <p className="mb-8 text-sm text-muted">
         Only what needs a decision. Everything else already happened without you.
+        <span className="ml-2 text-[11px] text-subtle">Session expires in {hoursLeft}h</span>
       </p>
 
       {/* --- the queue comes first, deliberately --- */}

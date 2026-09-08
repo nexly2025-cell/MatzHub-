@@ -5,7 +5,7 @@ import Link from "next/link";
 import Image from "next/image";
 import { cartTotals, clearCart, getCart, removeFromCart, subscribe, type CartItem, updateCartQty } from "@/lib/client-store";
 import { buildOrderMessage } from "@/lib/order-message";
-import { inr, waLink } from "@/lib/utils";
+import { inr, waLink, PAYMENT } from "@/lib/utils";
 
 export default function CartPage() {
   const [cart, setCart] = useState<CartItem[]>([]);
@@ -194,7 +194,19 @@ export default function CartPage() {
             <p className="font-medium text-ink flex items-center gap-1">
               <span className="text-accent">✓</span> Availability confirmed by our team
             </p>
-            <p>We’ll confirm stock and delivery details before dispatch. No payment is taken on this website.</p>
+            <p>We’ll confirm stock and delivery details before dispatch. Nothing is settled on this page.</p>
+            <p className="pt-2 font-medium text-ink">Settle by UPI or bank transfer after we confirm the order.</p>
+            <p>
+              UPI · <span className="text-ink">{PAYMENT.upiId}</span>
+            </p>
+            <p>
+              {PAYMENT.bankName} · {PAYMENT.bankHolder} · IFSC {PAYMENT.bankIfsc}
+            </p>
+            {PAYMENT.cashfreeEnabled ? (
+              <p>Online checkout via Cashfree is also available at the next step.</p>
+            ) : (
+              <p>Online gateway is not configured on this deployment — UPI and bank transfer are the fallback.</p>
+            )}
           </div>
         </div>
       </div>

@@ -28,7 +28,7 @@ export async function GET() {
       latencyMs: Date.now() - t0,
       timestamp: new Date().toISOString(),
     });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { status: "error", database: "unreachable", error: "database unavailable" },
       { status: 503 },

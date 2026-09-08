@@ -91,7 +91,7 @@ export default async function Home() {
         <div className="shell py-14 lg:py-20">
           <div className="mb-8 flex items-end justify-between gap-4">
             <h2 className="display text-[clamp(1.6rem,5vw,2.4rem)]">Shop by category</h2>
-            <Link href="/sitemap" className="hidden shrink-0 text-[12px] uppercase tracking-[0.14em] text-muted hover:text-ink sm:block">
+            <Link href="/products" className="hidden shrink-0 text-[12px] uppercase tracking-[0.14em] text-muted hover:text-ink sm:block">
               All products →
             </Link>
           </div>

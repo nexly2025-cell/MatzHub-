@@ -202,6 +202,31 @@ export async function processImages(buffers) {
   return refined.sort((a, b) => a.index - b.index).map((k) => k.webp);
 }
 
-const mediaEngine = { optimiseImage, processVideo, processImages, sharpness, framesForCategory };
+/**
+ * Issue 1 — never persist signed URLs. They expire in ~1 hour and break
+ * 40–60% of catalogue images for returning visitors.
+ */
+export function getPublicUrl(supabaseUrl, bucket, objectPath) {
+  const base = String(supabaseUrl || "").replace(/\/$/, "");
+  const clean = String(objectPath || "").replace(/^\/+/, "");
+  if (!base || !bucket || !clean) return "";
+  return `${base}/storage/v1/object/public/${bucket}/${clean}`;
+}
+
+export function toPublicUrl(url) {
+  if (!url || typeof url !== "string") return url;
+  let next = url
+    .replace("/storage/v1/object/sign/", "/storage/v1/object/public/")
+    .replace("/storage/v1/object/authenticated/", "/storage/v1/object/public/");
+  try {
+    const parsed = new URL(next);
+    parsed.searchParams.delete("token");
+    return parsed.toString();
+  } catch {
+    return next.split("?")[0];
+  }
+}
+
+const mediaEngine = { optimiseImage, processVideo, processImages, sharpness, framesForCategory, getPublicUrl, toPublicUrl };
 
 export default mediaEngine;

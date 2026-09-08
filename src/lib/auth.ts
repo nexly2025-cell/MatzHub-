@@ -11,7 +11,9 @@
 
 export const ADMIN_COOKIE = "mh_ops";
 export const RESELLER_COOKIE = "mh_reseller";
-const TTL_SECONDS = 60 * 60 * 12;
+export const CSRF_COOKIE = "mh_ops_csrf";
+/** Issue 8 — 24 hour session expiry. */
+const TTL_SECONDS = 60 * 60 * 24;
 
 const enc = new TextEncoder();
 
@@ -92,4 +94,69 @@ export function adminPassword(): string {
     throw new Error("ADMIN_PASSWORD is not set. Refusing to run with a default admin password.");
   }
   return "matzhub";
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const buf = await crypto.subtle.digest("SHA-256", enc.encode(value));
+  return Array.from(new Uint8Array(buf))
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+export function newCsrfToken(): string {
+  const bytes = crypto.getRandomValues(new Uint8Array(18));
+  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/**
+ * Issue 8 — persist an ops session in Postgres. Dynamic import keeps this
+ * module Edge-safe for `src/proxy.ts` (HMAC still verifies at the gate).
+ */
+export async function persistAdminSession(
+  token: string,
+  csrfToken: string,
+  meta?: { ip?: string | null; userAgent?: string | null },
+): Promise<void> {
+  const { db } = await import("@/db");
+  const { adminSessions } = await import("@/db/schema");
+  const tokenHash = await sha256Hex(token);
+  await db.insert(adminSessions).values({
+    tokenHash,
+    csrfToken,
+    ip: meta?.ip ?? null,
+    userAgent: meta?.userAgent ?? null,
+    expiresAt: new Date(Date.now() + TTL_SECONDS * 1000),
+  });
+}
+
+export async function loadAdminSession(token: string | undefined | null) {
+  if (!token) return null;
+  if (!(await verifyAdminToken(token))) return null;
+  const { db } = await import("@/db");
+  const { adminSessions } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  const tokenHash = await sha256Hex(token);
+  const [row] = await db.select().from(adminSessions).where(eq(adminSessions.tokenHash, tokenHash)).limit(1);
+  if (!row) return null;
+  if (row.expiresAt.getTime() < Date.now()) {
+    await db.delete(adminSessions).where(eq(adminSessions.id, row.id));
+    return null;
+  }
+  await db.update(adminSessions).set({ lastSeenAt: new Date() }).where(eq(adminSessions.id, row.id));
+  return row;
+}
+
+export async function destroyAdminSession(token: string | undefined | null): Promise<void> {
+  if (!token) return;
+  const { db } = await import("@/db");
+  const { adminSessions } = await import("@/db/schema");
+  const { eq } = await import("drizzle-orm");
+  await db.delete(adminSessions).where(eq(adminSessions.tokenHash, await sha256Hex(token)));
+}
+
+export function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i += 1) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
 }

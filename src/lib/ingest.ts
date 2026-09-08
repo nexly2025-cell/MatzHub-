@@ -3,6 +3,7 @@ import { and, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import {
   categories,
+  ingestDeadLetters,
   ingestionEvents,
   manufacturers,
   notifications,
@@ -67,11 +68,48 @@ async function uniqueSlug(base: string): Promise<string> {
   return `${root}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Issue 7 — 3 attempts with exponential backoff. Terminal failures go to the
+ * dead-letter queue instead of disappearing.
+ */
+export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      return await ingestMessageOnce(msg);
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) await sleep(400 * 2 ** (attempt - 1));
+    }
+  }
+  const reason = lastError instanceof Error ? lastError.message : "unknown error";
+  await db
+    .insert(ingestDeadLetters)
+    .values({
+      messageId: msg.messageId,
+      payload: msg as unknown as Record<string, unknown>,
+      error: reason,
+      attempts: 3,
+      lastAttemptAt: new Date(),
+    })
+    .catch(() => undefined);
+  await db.insert(ingestionEvents).values({
+    source: msg.source ?? "whatsapp",
+    messageId: msg.messageId,
+    rawCaption: (msg.caption || "").slice(0, 4000),
+    stage: "failed",
+    error: reason,
+  }).catch(() => undefined);
+  return { messageId: msg.messageId, stage: "failed", reason };
+}
+
 /**
  * The full zero-touch pipeline for a single manufacturer message.
  * received → deduped → enriched → priced → published | needs_review
  */
-export async function ingestMessage(msg: RawMessage): Promise<IngestResult> {
+async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
   const t0 = Date.now();
   const source = msg.source ?? "whatsapp";
   const caption = (msg.caption || "").trim();

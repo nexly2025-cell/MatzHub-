@@ -26,6 +26,7 @@ export type CreateOrderInput = {
   submissionKey: string;
   items: OrderLineInput[];
   customer: CustomerOrderInput;
+  paymentMode?: "prepaid" | "upi" | "bank";
 };
 
 export class OrderRequestError extends Error {
@@ -242,7 +243,7 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
           total,
           costTotal: resolved.reduce((sum, line) => sum + line.product.costPrice * line.qty, 0),
           profit: resolved.reduce((sum, line) => sum + (line.product.price - line.product.costPrice) * line.qty, 0),
-          paymentMode: "prepaid",
+          paymentMode: raw.paymentMode === "upi" || raw.paymentMode === "bank" || raw.paymentMode === "prepaid" ? raw.paymentMode : "prepaid",
           paymentStatus: "pending",
           status: "placed",
           timeline: [{ at: new Date().toISOString(), status: "placed", note: "Order request submitted online" }],

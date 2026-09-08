@@ -6,7 +6,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import { buildOrderMessage } from "@/lib/order-message";
 import { anonId, cartTotals, clearCart, getCart, subscribe, type CartItem } from "@/lib/client-store";
-import { inr, waLink } from "@/lib/utils";
+import { inr, waLink, PAYMENT } from "@/lib/utils";
 
 const REQUEST_KEY = "mh_order_request_v1";
 
@@ -41,6 +41,7 @@ export default function CheckoutPage() {
   const [mounted, setMounted] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
+  const [payMethod, setPayMethod] = useState<"upi" | "bank" | "prepaid">(PAYMENT.cashfreeEnabled ? "prepaid" : "upi");
   const totals = useMemo(() => cartTotals(cart), [cart]);
 
   useEffect(() => {
@@ -164,6 +165,35 @@ export default function CheckoutPage() {
                 <input name="notes" maxLength={500} placeholder="Size, colour, or delivery note" className="field w-full" />
               </label>
             </div>
+
+            <fieldset className="mt-6 space-y-2">
+              <legend className="eyebrow mb-2">How would you like to settle?</legend>
+              {PAYMENT.cashfreeEnabled && (
+                <label className="flex items-start gap-3 rounded-lg border border-line p-3 text-sm">
+                  <input type="radio" name="pay" checked={payMethod === "prepaid"} onChange={() => setPayMethod("prepaid")} />
+                  <span>
+                    <span className="font-medium text-ink">Cashfree</span>
+                    <span className="mt-0.5 block text-[12px] text-muted">We’ll send a payment link on WhatsApp after we confirm stock.</span>
+                  </span>
+                </label>
+              )}
+              <label className="flex items-start gap-3 rounded-lg border border-line p-3 text-sm">
+                <input type="radio" name="pay" checked={payMethod === "upi"} onChange={() => setPayMethod("upi")} />
+                <span>
+                  <span className="font-medium text-ink">UPI</span>
+                  <span className="mt-0.5 block text-[12px] text-muted">{PAYMENT.upiId} — transfer after we confirm the order.</span>
+                </span>
+              </label>
+              <label className="flex items-start gap-3 rounded-lg border border-line p-3 text-sm">
+                <input type="radio" name="pay" checked={payMethod === "bank"} onChange={() => setPayMethod("bank")} />
+                <span>
+                  <span className="font-medium text-ink">Bank transfer</span>
+                  <span className="mt-0.5 block text-[12px] text-muted">
+                    {PAYMENT.bankName} · {PAYMENT.bankHolder} · A/C {PAYMENT.bankAccount} · IFSC {PAYMENT.bankIfsc}
+                  </span>
+                </span>
+              </label>
+            </fieldset>
 
             {error && <p role="alert" className="mt-5 rounded-lg border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger">{error}</p>}
 

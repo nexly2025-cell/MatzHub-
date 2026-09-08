@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { db } from "@/db";
 import { searchQueries } from "@/db/schema";
-import { getCategories, getFacets, listProducts } from "@/lib/queries";
+import { getCategories, getCategoryBySlug, getFacets, listProducts } from "@/lib/queries";
 import { ProductGrid } from "@/components/ProductCard";
 import Filters from "@/components/Filters";
 
@@ -26,12 +26,18 @@ export async function generateMetadata({ searchParams }: Props): Promise<Metadat
 export default async function SearchPage({ searchParams }: Props) {
   const sp = await searchParams;
   const q = one(sp.q) ?? "";
+  const categorySlug = (one(sp.category) ?? "").trim().toLowerCase();
   const page = Number(one(sp.page) ?? 1) || 1;
   const sort = (one(sp.sort) ?? (q ? "trending" : "new")) as "trending" | "new" | "price_asc" | "price_desc" | "discount";
 
-  const [data, facets, cats] = await Promise.all([
+  const cats = await getCategories();
+  const cat = categorySlug ? await getCategoryBySlug(categorySlug) : null;
+  const categoryId = cat?.isActive ? cat.id : undefined;
+
+  const [data, facets] = await Promise.all([
     listProducts({
       q,
+      categoryId,
       page,
       sort,
       min: one(sp.min) ? Number(one(sp.min)) : undefined,
@@ -40,8 +46,7 @@ export default async function SearchPage({ searchParams }: Props) {
       color: one(sp.color),
       perPage: 24,
     }),
-    getFacets(),
-    getCategories(),
+    getFacets(categoryId),
   ]);
 
   // Zero-result queries are a product roadmap signal, so we persist them.
@@ -68,7 +73,15 @@ export default async function SearchPage({ searchParams }: Props) {
       <Filters
         basePath="/search"
         facets={facets}
-        current={{ sort, brand: one(sp.brand), color: one(sp.color), min: one(sp.min), max: one(sp.max) }}
+        categories={cats.map((c) => ({ slug: c.slug, name: c.name }))}
+        current={{
+          sort,
+          brand: one(sp.brand),
+          color: one(sp.color),
+          min: one(sp.min),
+          max: one(sp.max),
+          category: categorySlug || undefined,
+        }}
       />
 
       <div className="mt-7">

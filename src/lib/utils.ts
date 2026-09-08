@@ -1,8 +1,16 @@
+function resolveSiteUrl() {
+  const fromSite = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (fromSite) return fromSite.replace(/\/$/, "");
+  const vercel = process.env.VERCEL_URL?.trim();
+  if (vercel) return (vercel.startsWith("http") ? vercel : `https://${vercel}`).replace(/\/$/, "");
+  return "https://matzhub.com";
+}
+
 export const SITE = {
   name: "MatzHub",
   legalName: "MatzHub Retail",
   tagline: "Imported, master-quality accessories and apparel — priced without the middleman.",
-  url: process.env.NEXT_PUBLIC_SITE_URL || "https://matzhub.com",
+  url: resolveSiteUrl(),
   whatsapp: process.env.NEXT_PUBLIC_CUSTOMER_WHATSAPP || "9187412133", // Customer-facing sales number
   email: "hello@matzhub.com",
   country: "IN",
@@ -55,6 +63,16 @@ export const orderNo = () => {
 };
 
 export const waLink = (text: string) => `https://wa.me/${SITE.whatsapp}?text=${encodeURIComponent(text)}`;
+
+/** Issue 15 — checkout fallbacks. Cashfree is optional; UPI/bank always work. */
+export const PAYMENT = {
+  cashfreeEnabled: Boolean(process.env.NEXT_PUBLIC_CASHFREE_APP_ID),
+  upiId: process.env.NEXT_PUBLIC_UPI_ID || "matzhub@upi",
+  bankName: process.env.NEXT_PUBLIC_BANK_NAME || "HDFC Bank",
+  bankAccount: process.env.NEXT_PUBLIC_BANK_ACCOUNT || "50100000000000",
+  bankIfsc: process.env.NEXT_PUBLIC_BANK_IFSC || "HDFC0000001",
+  bankHolder: process.env.NEXT_PUBLIC_BANK_HOLDER || "MatzHub Retail",
+};
 
 export const relativeTime = (d: Date | string | null | undefined) => {
   if (!d) return "never";

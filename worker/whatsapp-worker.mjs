@@ -206,7 +206,8 @@ async function hostImage(buffer, contentType, ext) {
       body: buffer,
     });
     if (!res.ok) throw new Error(`storage upload failed ${res.status} ${await res.text()}`);
-    return `${supabaseUrl}/storage/v1/object/public/${bucket}/${name}`;
+    // Issue 1 — store the public URL via getPublicUrl(), never a signed URL.
+    return mediaEngine.toPublicUrl(mediaEngine.getPublicUrl(supabaseUrl, bucket, name));
   }
 
   throw new Error("No image host configured. Set SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY.");
@@ -228,7 +229,7 @@ async function hostVideo(buffer) {
       body: buffer,
     });
     if (!res.ok) throw new Error(`video upload failed ${res.status}: ${await res.text()}`);
-    return `${supabaseUrl}/storage/v1/object/public/${bucket}/${name}`;
+    return mediaEngine.toPublicUrl(mediaEngine.getPublicUrl(supabaseUrl, bucket, name));
   }
   throw new Error("No video host configured. Set SUPABASE_URL + SUPABASE_SERVICE_ROLE_KEY and create the product-media bucket.");
 }
@@ -390,6 +391,8 @@ async function safeStart(context) {
  * which covers ordinary network blips without paging anyone.
  */
 const ESCALATE_AFTER_ATTEMPTS = 6;
+/** Issue 4 — hard cap on reconnect attempts before a cooling period. */
+const MAX_RECONNECT_ATTEMPTS = 10;
 let escalated = false;
 
 /** One-way notice to the operator when automatic recovery is not working. */
@@ -423,11 +426,27 @@ async function escalate(reason) {
 
 function scheduleReconnect(reason) {
   if (reconnectTimer) return; // one pending reconnect at a time
-  // 4s, 8s, 16s, 32s, capped at 60s. Prevents hammering after an outage.
-  const delay = Math.min(4000 * 2 ** reconnectAttempts, 60_000);
+
+  // Issue 4: max 10 attempts with exponential backoff + jitter, then cooldown
+  if (reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
+    log("reconnect_exhausted", { reason, attempts: reconnectAttempts });
+    void escalate(reason);
+    const cool = 60_000 + Math.floor(Math.random() * 15_000);
+    reconnectTimer = setTimeout(() => {
+      reconnectTimer = null;
+      reconnectAttempts = 0;
+      void safeStart("reconnect-cooldown");
+    }, cool);
+    return;
+  }
+
+  const base = Math.min(4000 * 2 ** reconnectAttempts, 60_000);
+  const jitter = Math.floor(Math.random() * Math.max(250, base * 0.25));
+  const delay = base + jitter;
+
   reconnectAttempts += 1;
   if (reconnectAttempts >= ESCALATE_AFTER_ATTEMPTS) void escalate(reason);
-  log("reconnect_scheduled", { reason, delayMs: delay, attempt: reconnectAttempts });
+  log("reconnect_scheduled", { reason, delayMs: delay, attempt: reconnectAttempts, jitter });
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null;
     void safeStart("reconnect");

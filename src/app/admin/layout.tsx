@@ -1,6 +1,9 @@
 import Link from "next/link";
 import Image from "next/image";
 import type { Metadata } from "next";
+import { cookies } from "next/headers";
+import { redirect } from "next/navigation";
+import { ADMIN_COOKIE, CSRF_COOKIE, destroyAdminSession } from "@/lib/auth";
 
 export const metadata: Metadata = { title: "Operations", robots: { index: false, follow: false } };
 
@@ -19,6 +22,15 @@ const NAV = [
   ["/admin/settings", "Settings"],
 ];
 
+async function logout() {
+  "use server";
+  const jar = await cookies();
+  await destroyAdminSession(jar.get(ADMIN_COOKIE)?.value);
+  jar.delete(ADMIN_COOKIE);
+  jar.delete(CSRF_COOKIE);
+  redirect("/admin/login");
+}
+
 export default function AdminLayout({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-canvas">
@@ -33,6 +45,11 @@ export default function AdminLayout({ children }: { children: React.ReactNode })
             {NAV.map(([h, l]) => (
               <Link key={h} href={h} className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-muted hover:bg-surface-2 hover:text-ink">{l}</Link>
             ))}
+            <form action={logout}>
+              <button type="submit" className="whitespace-nowrap rounded-lg px-3 py-2 text-xs text-muted hover:bg-surface-2 hover:text-ink">
+                Sign out
+              </button>
+            </form>
           </nav>
         </div>
       </header>

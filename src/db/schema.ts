@@ -51,6 +51,29 @@ export const sessions = pgTable(
   (t) => [uniqueIndex("sessions_token_uidx").on(t.token), index("sessions_user_idx").on(t.userId)],
 );
 
+/**
+ * Issue 8 — ops sessions live in Postgres so they can expire (24h) and be
+ * revoked without waiting for the HMAC cookie to lapse. CSRF is stored
+ * alongside the token hash (never the raw cookie).
+ */
+export const adminSessions = pgTable(
+  "admin_sessions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    tokenHash: text("token_hash").notNull(),
+    csrfToken: text("csrf_token").notNull(),
+    ip: text("ip"),
+    userAgent: text("user_agent"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    lastSeenAt: timestamp("last_seen_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("admin_sessions_token_uidx").on(t.tokenHash),
+    index("admin_sessions_expires_idx").on(t.expiresAt),
+  ],
+);
+
 export const otpCodes = pgTable(
   "otp_codes",
   {
@@ -446,6 +469,24 @@ export const ingestionEvents = pgTable(
     index("ingest_created_idx").on(t.createdAt),
     index("ingest_msg_idx").on(t.messageId),
   ],
+);
+
+/**
+ * Issue 7 — dead-letter queue. A product that still fails after 3 retries is
+ * stored here instead of vanishing. Cron self-heal can re-queue these later.
+ */
+export const ingestDeadLetters = pgTable(
+  "ingest_dead_letters",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    messageId: text("message_id").notNull(),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    error: text("error").notNull(),
+    attempts: integer("attempts").notNull().default(3),
+    lastAttemptAt: timestamp("last_attempt_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("ingest_dlq_msg_idx").on(t.messageId), index("ingest_dlq_created_idx").on(t.createdAt)],
 );
 
 export const automationRuns = pgTable(

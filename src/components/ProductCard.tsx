@@ -4,12 +4,23 @@ import Image from "next/image";
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import type { ProductCard as PC } from "@/lib/queries";
-import { getWishlist, subscribe, toggleWishlist, track } from "@/lib/client-store";
+import { getWishlist, subscribe, toggleWishlist } from "@/lib/client-store";
+import { toPublicMediaUrl } from "@/lib/storage";
 import { inr } from "@/lib/utils";
+
+const FALLBACK = "/images/product-fallback.jpg";
+const BLUR_DATA_URL =
+  "data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 4 5'%3E%3Crect width='4' height='5' fill='%23ebe8e1'/%3E%3C/svg%3E";
 
 export default function ProductCard({ p, priority = false }: { p: PC; priority?: boolean }) {
   const [saved, setSaved] = useState(false);
+  // Issue 1 + 11: public URL (never a signed URL) rendered through next/image.
+  const [src, setSrc] = useState(() => toPublicMediaUrl(p.heroImage) || FALLBACK);
   const off = p.mrp > p.price ? Math.round(((p.mrp - p.price) / p.mrp) * 100) : 0;
+
+  useEffect(() => {
+    setSrc(toPublicMediaUrl(p.heroImage) || FALLBACK);
+  }, [p.heroImage]);
 
   useEffect(() => {
     const sync = () => setSaved(getWishlist().includes(p.id));
@@ -23,12 +34,16 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
         <div className="relative overflow-hidden rounded-xl border border-line bg-surface transition-all duration-500 group-hover:border-linestrong group-hover:shadow-lift">
           <div className="relative aspect-[4/5] overflow-hidden bg-surface-3">
             <Image
-              src={p.heroImage}
+              src={src}
               alt={p.altText || p.title}
               fill
               sizes="(max-width: 640px) 50vw, (max-width: 1024px) 33vw, 25vw"
               className="object-cover transition-transform duration-700 group-hover:scale-[1.04]"
               priority={priority}
+              loading={priority ? "eager" : "lazy"}
+              placeholder="blur"
+              blurDataURL={BLUR_DATA_URL}
+              onError={() => setSrc(FALLBACK)}
             />
           </div>
 
@@ -120,6 +135,22 @@ export function ProductGrid({ items, priorityCount = 4 }: { items: PC[]; priorit
     <div className="grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-3 sm:gap-x-5 lg:grid-cols-4 lg:gap-x-6">
       {items.map((p, i) => (
         <ProductCard key={p.id} p={p} priority={i < priorityCount} />
+      ))}
+    </div>
+  );
+}
+
+/** Issue 12 — luxury skeleton used by Suspense boundaries on catalogue routes. */
+export function ProductGridSkeleton({ count = 8 }: { count?: number }) {
+  return (
+    <div className="grid grid-cols-2 gap-x-4 gap-y-8 sm:grid-cols-3 sm:gap-x-5 lg:grid-cols-4 lg:gap-x-6" aria-hidden>
+      {Array.from({ length: count }).map((_, i) => (
+        <div key={i}>
+          <div className="skeleton aspect-[4/5] rounded-xl" />
+          <div className="skeleton mt-3 h-4 w-4/5 rounded" />
+          <div className="skeleton mt-2 h-3 w-1/2 rounded" />
+          <div className="skeleton mt-3 h-5 w-1/3 rounded" />
+        </div>
       ))}
     </div>
   );

@@ -1,6 +1,8 @@
-import { and, asc, desc, eq, gte, ilike, inArray, lte, ne, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { categories, manufacturers, opsTasks, orders, products, reviews } from "@/db/schema";
+import { searchMatchSql, searchRankSql } from "@/lib/search";
+import { toPublicMediaUrl } from "@/lib/storage";
 
 export const PUBLISHED = eq(products.status, "published");
 
@@ -74,31 +76,26 @@ export type ProductFilters = {
   perPage?: number;
 };
 
+function withPublicImages(items: ProductCard[]): ProductCard[] {
+  return items.map((p) => ({ ...p, heroImage: toPublicMediaUrl(p.heroImage) || p.heroImage }));
+}
+
 export async function listProducts(f: ProductFilters) {
   const perPage = f.perPage ?? 24;
   const page = Math.max(1, f.page ?? 1);
   const clauses = [PUBLISHED];
+  const term = f.q?.trim() ?? "";
 
   if (f.categoryId) clauses.push(eq(products.categoryId, f.categoryId));
   if (f.min !== undefined) clauses.push(gte(products.price, f.min));
   if (f.max !== undefined) clauses.push(lte(products.price, f.max));
   if (f.brand) clauses.push(eq(products.brand, f.brand));
   if (f.color) clauses.push(eq(products.color, f.color));
-  if (f.q && f.q.trim()) {
-    const term = `%${f.q.trim()}%`;
-    clauses.push(
-      or(
-        ilike(products.title, term),
-        ilike(products.description, term),
-        ilike(products.brand, term),
-        ilike(products.color, term),
-        sql`${products.tags}::text ilike ${term}`,
-      )!,
-    );
-  }
+  // Issue 9 — trigram similarity instead of unindexable LIKE '%term%'.
+  if (term) clauses.push(searchMatchSql(term));
 
   const where = and(...clauses);
-  const order =
+  const sortOrder =
     f.sort === "new"
       ? desc(products.publishedAt)
       : f.sort === "price_asc"
@@ -109,17 +106,62 @@ export async function listProducts(f: ProductFilters) {
             ? desc(sql`(${products.mrp} - ${products.price})::float / nullif(${products.mrp},0)`)
             : desc(products.trendingScore);
 
-  const [items, [{ total }]] = await Promise.all([
-    db.select(productCard).from(products).where(where).orderBy(order, desc(products.createdAt)).limit(perPage).offset((page - 1) * perPage),
-    db.select({ total: sql<number>`count(*)::int` }).from(products).where(where),
-  ]);
+  const orderBy = term
+    ? [desc(searchRankSql(term)), sortOrder, desc(products.createdAt)]
+    : [sortOrder, desc(products.createdAt)];
 
-  return { items: items as ProductCard[], total, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)) };
+  const run = () =>
+    Promise.all([
+      db.select(productCard).from(products).where(where).orderBy(...orderBy).limit(perPage).offset((page - 1) * perPage),
+      db.select({ total: sql<number>`count(*)::int` }).from(products).where(where),
+    ]);
+
+  let items: ProductCard[];
+  let total: number;
+  try {
+    const [rows, countRows] = await run();
+    items = rows as ProductCard[];
+    total = countRows[0]?.total ?? 0;
+  } catch {
+    // If pg_trgm is not yet enabled, fall back to a bounded ilike so search
+    // never 500s. The extension is created at setup.
+    const like = `%${term}%`;
+    const fallbackWhere = and(
+      PUBLISHED,
+      f.categoryId ? eq(products.categoryId, f.categoryId) : sql`true`,
+      f.min !== undefined ? gte(products.price, f.min) : sql`true`,
+      f.max !== undefined ? lte(products.price, f.max) : sql`true`,
+      f.brand ? eq(products.brand, f.brand) : sql`true`,
+      f.color ? eq(products.color, f.color) : sql`true`,
+      term
+        ? or(
+            sql`${products.title} ilike ${like}`,
+            sql`coalesce(${products.brand}, '') ilike ${like}`,
+            sql`coalesce(${products.color}, '') ilike ${like}`,
+            sql`${products.description} ilike ${like}`,
+          )!
+        : sql`true`,
+    );
+    const [rows, countRows] = await Promise.all([
+      db.select(productCard).from(products).where(fallbackWhere).orderBy(sortOrder, desc(products.createdAt)).limit(perPage).offset((page - 1) * perPage),
+      db.select({ total: sql<number>`count(*)::int` }).from(products).where(fallbackWhere),
+    ]);
+    items = rows as ProductCard[];
+    total = countRows[0]?.total ?? 0;
+  }
+
+  return { items: withPublicImages(items), total, page, perPage, pages: Math.max(1, Math.ceil(total / perPage)) };
 }
 
 export async function getProductBySlug(slug: string) {
   const [p] = await db.select().from(products).where(and(eq(products.slug, slug), PUBLISHED)).limit(1);
-  return p ?? null;
+  if (!p) return null;
+  return {
+    ...p,
+    heroImage: toPublicMediaUrl(p.heroImage) || p.heroImage,
+    images: Array.isArray(p.images) ? p.images.map((u) => toPublicMediaUrl(u) || u) : p.images,
+    videoUrl: p.videoUrl ? toPublicMediaUrl(p.videoUrl) || p.videoUrl : p.videoUrl,
+  };
 }
 
 export async function getRelated(p: { id: string; categoryId: string | null; price: number }) {
@@ -134,7 +176,8 @@ export async function getRelated(p: { id: string; categoryId: string | null; pri
       ),
     )
     .orderBy(sql`abs(${products.price} - ${p.price})`)
-    .limit(8) as Promise<ProductCard[]>;
+    .limit(8)
+    .then((rows) => withPublicImages(rows as ProductCard[]));
 }
 
 /**
@@ -174,7 +217,8 @@ export async function getCrossCategory(p: {
     .from(products)
     .where(and(...conditions))
     .orderBy(desc(sharedAttributeCount), desc(products.trendingScore))
-    .limit(8) as Promise<ProductCard[]>;
+    .limit(8)
+    .then((rows) => withPublicImages(rows as ProductCard[]));
 }
 
 export async function getProductReviews(productId: string) {
@@ -189,7 +233,7 @@ export async function getProductReviews(productId: string) {
 export async function getProductsByIds(ids: string[]) {
   if (!ids.length) return [] as ProductCard[];
   const rows = await db.select(productCard).from(products).where(and(inArray(products.id, ids), PUBLISHED));
-  return rows as ProductCard[];
+  return withPublicImages(rows as ProductCard[]);
 }
 
 export async function getFacets(categoryId?: string) {

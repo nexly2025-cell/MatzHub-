@@ -1,7 +1,8 @@
 "use client";
 
 import Image from "next/image";
-import { useState } from "react";
+import { useMemo, useState } from "react";
+import { toPublicMediaUrl } from "@/lib/storage";
 
 /**
  * Product gallery: photo mode + video mode.
@@ -24,7 +25,11 @@ export default function ProductGallery({
   mediaType?: "image" | "video";
   videoUrl?: string | null;
 }) {
-  const all = [heroImage, ...images.filter((i) => i && i !== heroImage)].slice(0, 6);
+  const all = useMemo(
+    () =>
+      [toPublicMediaUrl(heroImage) || heroImage, ...images.map((i) => toPublicMediaUrl(i) || i).filter((i) => i && i !== heroImage)].slice(0, 6),
+    [heroImage, images],
+  );
   const hasVideo = mediaType === "video" && Boolean(videoUrl);
   const [active, setActive] = useState(0);
   const [zoom, setZoom] = useState(false);

@@ -2,7 +2,7 @@ import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { automationRuns, categories, manufacturers, notifications, opsTasks, products, settings } from "@/db/schema";
 import { detectCategory } from "@/lib/ai";
-import { inr, relativeTime } from "@/lib/utils";
+import { inr, relativeTime, SITE } from "@/lib/utils";
 import { createSubscriptionOrder, SUBSCRIPTION_PRICE_INR, subscriptionStatus } from "@/lib/subscription";
 import {
   approvedSupplierGroups,
@@ -828,7 +828,7 @@ export async function lookupSku(sku: string): Promise<Reply> {
   if (!row) return { text: `No product with SKU \`${clean}\`.`, ephemeral: true };
 
   const margin = row.costPrice > 0 ? Math.round(((row.price - row.costPrice) / row.costPrice) * 100) : 0;
-  const site = (process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/$/, "");
+  const site = SITE.url;
 
   return {
     text: [
@@ -1189,7 +1189,7 @@ export async function runCommand(command: string, args: string[], chatId: string
     case "dashboard": {
       // The dashboard URL is never published on the storefront; this bot is the
       // only place it is shared, which is why it is pinned rather than ephemeral.
-      const base = (process.env.NEXT_PUBLIC_SITE_URL || "").replace(/\/$/, "");
+      const base = SITE.url;
       if (!base) return { text: "The dashboard address has not been configured yet.", ephemeral: true };
       const url = `${base}/admin`;
       return {

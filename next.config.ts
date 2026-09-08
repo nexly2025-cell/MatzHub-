@@ -5,8 +5,10 @@ const nextConfig: NextConfig = {
     formats: ["image/avif", "image/webp"],
     remotePatterns: [
       { protocol: "https", hostname: "images.pexels.com" },
-      { protocol: "https", hostname: "**.supabase.co" },
+      { protocol: "https", hostname: "**.supabase.co", pathname: "/storage/v1/object/**" },
+      { protocol: "https", hostname: "*.supabase.co", pathname: "/storage/v1/object/**" },
       { protocol: "https", hostname: "res.cloudinary.com" },
+      { protocol: "https", hostname: "images.unsplash.com" },
     ],
     deviceSizes: [360, 480, 640, 828, 1080, 1280, 1600],
     // Supplier imagery is immutable once listed, so a long TTL keeps optimised

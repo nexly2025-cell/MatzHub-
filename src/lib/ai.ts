@@ -784,20 +784,51 @@ const GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite";
 // while letting the majority complete. Override with GEMINI_TIMEOUT_MS.
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 15000;
 
-/** In-process memoisation: identical source content is captioned once. */
-const enrichmentCache = new Map<string, Partial<Enrichment> | null>();
-const ENRICHMENT_CACHE_MAX = 200;
+/**
+ * Issue 6 — 7-day in-memory cache + semaphore of 5 concurrent Gemini calls.
+ * Free tier is 60 rpm; without this the ingest burst hits the ceiling.
+ */
+const GEMINI_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const GEMINI_CACHE_MAX = 400;
+const GEMINI_CONCURRENCY = 5;
+const enrichmentCache = new Map<string, { value: Partial<Enrichment>; expires: number }>();
+let geminiInFlight = 0;
+const geminiWaiters: Array<() => void> = [];
 
 function enrichmentCacheKey(input: EnrichmentInput, grounded: Enrichment): string {
   return `${grounded.categorySlug}::${(input.caption || "").trim()}::${input.imageUrl ? "img" : "noimg"}`;
 }
 
-function rememberEnrichment(key: string, value: Partial<Enrichment> | null): void {
-  if (enrichmentCache.size >= ENRICHMENT_CACHE_MAX) {
+function readEnrichmentCache(key: string): Partial<Enrichment> | undefined {
+  const hit = enrichmentCache.get(key);
+  if (!hit) return undefined;
+  if (hit.expires < Date.now()) {
+    enrichmentCache.delete(key);
+    return undefined;
+  }
+  console.info("[gemini] cache hit", key.slice(0, 80));
+  return hit.value;
+}
+
+function rememberEnrichment(key: string, value: Partial<Enrichment>): void {
+  if (enrichmentCache.size >= GEMINI_CACHE_MAX) {
     const oldest = enrichmentCache.keys().next().value;
     if (oldest !== undefined) enrichmentCache.delete(oldest);
   }
-  enrichmentCache.set(key, value);
+  enrichmentCache.set(key, { value, expires: Date.now() + GEMINI_CACHE_TTL_MS });
+}
+
+async function withGeminiSlot<T>(fn: () => Promise<T>): Promise<T> {
+  while (geminiInFlight >= GEMINI_CONCURRENCY) {
+    await new Promise<void>((resolve) => geminiWaiters.push(resolve));
+  }
+  geminiInFlight += 1;
+  try {
+    return await fn();
+  } finally {
+    geminiInFlight -= 1;
+    geminiWaiters.shift()?.();
+  }
 }
 
 async function llmEnrich(
@@ -809,8 +840,19 @@ async function llmEnrich(
   if (!key) return null;
 
   const cacheKey = enrichmentCacheKey(input, grounded);
-  if (enrichmentCache.has(cacheKey)) return enrichmentCache.get(cacheKey) ?? null;
+  const cached = readEnrichmentCache(cacheKey);
+  if (cached) return cached;
 
+  return withGeminiSlot(() => callGemini(key, input, grounded, cacheKey, timeoutMs));
+}
+
+async function callGemini(
+  key: string,
+  input: EnrichmentInput,
+  grounded: Enrichment,
+  cacheKey: string,
+  timeoutMs: number,
+): Promise<Partial<Enrichment> | null> {
   const model = process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -821,9 +863,6 @@ async function llmEnrich(
       signal: controller.signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
-        // Low temperature keeps the model editing rather than imagining. Cap is
-        // deliberately tight: a complete caption payload measures ~600 chars,
-        // and a larger cap measurably increases latency without longer output.
         generationConfig: { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 1024 },
         systemInstruction: {
           parts: [
@@ -839,27 +878,21 @@ async function llmEnrich(
       }),
     });
 
-    if (!res.ok) {
-      rememberEnrichment(cacheKey, null);
-      return null;
-    }
+    if (!res.ok) return null;
 
     const json = (await res.json()) as {
       candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
     };
     const raw = json.candidates?.[0]?.content?.parts?.map((part) => part.text ?? "").join("") ?? "";
     const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
-    if (!cleaned) {
-      rememberEnrichment(cacheKey, null);
-      return null;
-    }
+    if (!cleaned) return null;
 
     const parsed = JSON.parse(cleaned) as Partial<Enrichment>;
     parsed.specs = groundSpecs(input.caption, parsed.specs);
     rememberEnrichment(cacheKey, parsed);
+    console.info("[gemini] cache store", cacheKey.slice(0, 80));
     return parsed;
   } catch {
-    rememberEnrichment(cacheKey, null);
     return null;
   } finally {
     clearTimeout(timer);

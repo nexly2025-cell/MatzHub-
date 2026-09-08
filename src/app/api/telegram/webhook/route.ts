@@ -7,6 +7,20 @@ import { HANDLER_BUDGET_MS, isSlowAction, keyboardFor, lookupSku, parseCommand, 
 export const dynamic = "force-dynamic";
 
 /**
+ * Issue 5 — webhook / dashboard URLs.
+ * NEXT_PUBLIC_SITE_URL is the canonical host. VERCEL_URL is a hostname without
+ * a protocol and is often unset on production custom domains. Last resort is
+ * the public matzhub.com domain.
+ */
+export function publicSiteUrl(): string {
+  const fromSite = process.env.NEXT_PUBLIC_SITE_URL?.trim();
+  if (fromSite) return fromSite.replace(/\/$/, "");
+  const vercel = process.env.VERCEL_URL?.trim();
+  if (vercel) return (vercel.startsWith("http") ? vercel : `https://${vercel}`).replace(/\/$/, "");
+  return "https://matzhub.com";
+}
+
+/**
  * Shared Telegram webhook handler, used by both bots.
  *
  * Bot identity comes from the URL, not from the sender:
