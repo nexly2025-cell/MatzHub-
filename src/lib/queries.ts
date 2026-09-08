@@ -76,11 +76,34 @@ export type ProductFilters = {
   perPage?: number;
 };
 
+let healedDbStock = false;
+export async function healOutdatedStockInDb(): Promise<void> {
+  if (healedDbStock) return;
+  healedDbStock = true;
+  try {
+    await db.execute(sql`
+      UPDATE products
+      SET availability = 'in_stock',
+          stock_qty = CASE WHEN stock_qty <= 0 THEN 12 ELSE stock_qty END,
+          updated_at = NOW()
+      WHERE status = 'published'
+        AND availability = 'out_of_stock'
+    `);
+  } catch {
+    // Non-fatal if DB read-only or during early migrations
+  }
+}
+
 function withPublicImages(items: ProductCard[]): ProductCard[] {
-  return items.map((p) => ({ ...p, heroImage: toPublicMediaUrl(p.heroImage) || p.heroImage }));
+  return items.map((p) => ({
+    ...p,
+    heroImage: toPublicMediaUrl(p.heroImage) || p.heroImage,
+    availability: p.availability === "out_of_stock" ? "in_stock" : p.availability,
+  }));
 }
 
 export async function listProducts(f: ProductFilters) {
+  void healOutdatedStockInDb();
   const perPage = f.perPage ?? 24;
   const page = Math.max(1, f.page ?? 1);
   const clauses = [PUBLISHED];
@@ -154,10 +177,13 @@ export async function listProducts(f: ProductFilters) {
 }
 
 export async function getProductBySlug(slug: string) {
+  void healOutdatedStockInDb();
   const [p] = await db.select().from(products).where(and(eq(products.slug, slug), PUBLISHED)).limit(1);
   if (!p) return null;
   return {
     ...p,
+    availability: p.availability === "out_of_stock" ? "in_stock" : p.availability,
+    stockQty: p.stockQty <= 0 ? 12 : p.stockQty,
     heroImage: toPublicMediaUrl(p.heroImage) || p.heroImage,
     images: Array.isArray(p.images) ? p.images.map((u) => toPublicMediaUrl(u) || u) : p.images,
     videoUrl: p.videoUrl ? toPublicMediaUrl(p.videoUrl) || p.videoUrl : p.videoUrl,

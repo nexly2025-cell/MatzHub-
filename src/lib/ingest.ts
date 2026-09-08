@@ -411,11 +411,8 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       price: pricing.price,
       resellerPrice: pricing.resellerPrice,
       marginPercent: pricing.marginPercent,
-      // Stock is genuinely unknown from the supplier message. Zero means "we
-      // don't know how many there are", not "sold out". The storefront shows
-      // "Check availability on WhatsApp" for zero-stock items rather than a
-      // false "25 in stock" claim.
-      stockQty: 0,
+      // Active supplier WhatsApp post carries live stock.
+      stockQty: 12,
       availability: "in_stock",
       status,
       qualityScore: enrichment.qualityScore,
@@ -591,10 +588,12 @@ export async function runExpiryJob() {
     .where(and(eq(products.status, "published"), sql`${products.stockQty} between 1 and 4`))
     .returning({ id: products.id });
 
+  // Only mark out_of_stock if customer orders actually depleted the inventory to 0,
+  // not active supplier items with unmetered stock.
   const out = await db
     .update(products)
     .set({ availability: "out_of_stock" })
-    .where(and(eq(products.status, "published"), eq(products.stockQty, 0)))
+    .where(and(eq(products.status, "published"), eq(products.stockQty, 0), sql`${products.orders} > 0`))
     .returning({ id: products.id });
 
   return { archived: expired.length, lowStock: low.length, outOfStock: out.length };

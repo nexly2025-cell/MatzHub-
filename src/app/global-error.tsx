@@ -1,5 +1,7 @@
 "use client";
 
+import Link from "next/link";
+
 /**
  * Issue 14 — branded root error boundary.
  * Must render its own <html> / <body> because it replaces the root layout.
@@ -46,7 +48,7 @@ export default function GlobalError({
               >
                 Try again
               </button>
-              <a
+              <Link
                 href="/"
                 style={{
                   border: "1px solid #c9c5ba",
@@ -58,7 +60,7 @@ export default function GlobalError({
                 }}
               >
                 Back to home
-              </a>
+              </Link>
             </div>
           </div>
         </main>

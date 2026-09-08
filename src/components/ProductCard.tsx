@@ -14,13 +14,10 @@ const BLUR_DATA_URL =
 
 export default function ProductCard({ p, priority = false }: { p: PC; priority?: boolean }) {
   const [saved, setSaved] = useState(false);
+  const [imgError, setImgError] = useState(false);
   // Issue 1 + 11: public URL (never a signed URL) rendered through next/image.
-  const [src, setSrc] = useState(() => toPublicMediaUrl(p.heroImage) || FALLBACK);
+  const src = imgError ? FALLBACK : toPublicMediaUrl(p.heroImage) || FALLBACK;
   const off = p.mrp > p.price ? Math.round(((p.mrp - p.price) / p.mrp) * 100) : 0;
-
-  useEffect(() => {
-    setSrc(toPublicMediaUrl(p.heroImage) || FALLBACK);
-  }, [p.heroImage]);
 
   useEffect(() => {
     const sync = () => setSaved(getWishlist().includes(p.id));
@@ -43,7 +40,7 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
               loading={priority ? "eager" : "lazy"}
               placeholder="blur"
               blurDataURL={BLUR_DATA_URL}
-              onError={() => setSrc(FALLBACK)}
+              onError={() => setImgError(true)}
             />
           </div>
 

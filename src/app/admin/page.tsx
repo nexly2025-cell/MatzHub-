@@ -35,7 +35,7 @@ export default async function AdminHome() {
   const s = await getAdminSnapshot();
   const stages = Object.fromEntries(s.ingest.map((r) => [r.stage, r.c]));
   const hoursLeft = session
-    ? Math.max(0, Math.round((session.expiresAt.getTime() - Date.now()) / 3_600_000))
+    ? Math.max(0, Math.round((session.expiresAt.getTime() - session.lastSeenAt.getTime()) / 3_600_000))
     : 24;
 
   return (
