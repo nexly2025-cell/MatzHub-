@@ -686,6 +686,22 @@ async function start() {
 
         if (!imageMsg && !videoMsg && !caption.trim()) continue;
 
+        // SAFE-06: text-only follow-up for a buffered album is part of the same product.
+        // Attach to the buffered caption, reset the window, and do not POST separately.
+        if (!imageMsg && !videoMsg && caption.trim()) {
+          const ackRe = /\b(?:done|ok|accepted|shipped)\s+(MH\d{6}[A-F0-9]{6,10})\b/i;
+          const senderKey = `${jid}:${String(m.key.participant ?? m.key.remoteJid)}`;
+          if (!ackRe.test(caption) && albumRows.has(senderKey)) {
+            const entry = albumRows.get(senderKey);
+            entry.caption = entry.caption ? `${entry.caption}\n${caption.trim()}` : caption.trim();
+            albumRows.set(senderKey, entry);
+            clearTimeout(albumTimers.get(senderKey));
+            albumTimers.set(senderKey, setTimeout(() => flushAlbum(senderKey), ALBUM_WINDOW_MS));
+            log("ALBUM_CAPTION_ATTACHED", { messageId, jid });
+            continue;
+          }
+        }
+
         if (imageMsg) {
           // PHOTO WORKFLOW: buffer albums briefly, process once.
           const raw = await downloadMediaMessage(m, "buffer", {});
