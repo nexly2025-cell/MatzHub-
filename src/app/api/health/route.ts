@@ -1,7 +1,6 @@
 import { NextResponse } from "next/server";
 import { sql } from "drizzle-orm";
 import { db } from "@/db";
-import { healOutdatedStockInDb } from "@/lib/queries";
 
 export const dynamic = "force-dynamic";
 
@@ -18,9 +17,8 @@ export async function GET() {
   const t0 = Date.now();
   try {
     await db.execute(sql`select 1`);
-    void healOutdatedStockInDb();
     const [{ products: count }] = await db.execute<{ products: number }>(
-      sql`select count(*)::int as products from products where status = 'published'`,
+      sql`select count(*)::int as products from products where status = 'published' and expires_at > now() and availability <> 'discontinued'`,
     ).then((r) => r.rows as Array<{ products: number }>).then((rows) => [rows[0] ?? { products: 0 }]);
 
     return NextResponse.json({
