@@ -14,7 +14,7 @@
 import { and, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { ingestionEvents, opsTasks, products } from "@/db/schema";
-import { captionSimilarity, imageHashSimilarity, enrichProduct, computePricing } from "@/lib/ai";
+import { captionSimilarity, enrichProduct, computePricing } from "@/lib/ai";
 import crypto from "node:crypto";
 
 const sha = (v: string) => crypto.createHash("sha256").update(v).digest("hex");
@@ -62,14 +62,14 @@ export async function classifyMessage(args: {
     if (imageHash && contentHash && p.imageHash === imageHash && p.contentHash === contentHash && p.messageId === messageId) {
       return { action: "reject_duplicate", originalProductId: p.id, reason: "exact duplicate" };
     }
-    const imgSim = p.imageHash && imageHash ? imageHashSimilarity(p.imageHash, imageHash) : 0;
+    const imgExact = p.imageHash && imageHash && p.imageHash === imageHash ? 1 : 0;
     const capSim = captionSimilarity(p.title, caption);
-    const sim = Math.max(imgSim, capSim * 0.7);
+    const sim = Math.max(imgExact, capSim * 0.7);
     if (sim >= 0.78) {
       return {
         action: "reject_duplicate",
         originalProductId: p.id,
-        reason: `approximate duplicate of ${p.title} (image ${imgSim.toFixed(2)}, caption ${capSim.toFixed(2)})`,
+        reason: `approximate duplicate of ${p.title} (image ${imgExact.toFixed(2)}, caption ${capSim.toFixed(2)})`,
       };
     }
     if (p.status === "archived" && sim >= 0.5) {
@@ -123,11 +123,29 @@ export async function applyResolution(
         patch.images = [imageUrl];
         if (args.imageHash) patch.imageHash = args.imageHash;
       }
+      const [existing] = await db
+        .select({
+          heroImage: products.heroImage,
+          costPrice: products.costPrice,
+          status: products.status,
+          title: products.title,
+          qualityScore: products.qualityScore,
+          confidence: products.confidence,
+          moderationReason: products.moderationReason,
+          manufacturerId: products.manufacturerId,
+        })
+        .from(products)
+        .where(eq(products.id, resolution.productId))
+        .limit(1);
       if (resolution.changes.includes("caption") && caption) {
         const re = await enrichProduct({ caption, imageUrl });
-        patch.title = re.title;
-        patch.description = re.description;
-        patch.shortAnswer = re.shortAnswer;
+        const isGenericFallback = /^(Unisex |Men's |Women's )?(Handbag|Watch|Shoe|Perfume|Sunglass|Apparel|Bag|Shirt)/i.test(re.title) && (existing?.title?.length ?? 0) > re.title.length + 10;
+        // Never overwrite a descriptive title with a generic fallback on a price-only follow-up.
+        if (!isGenericFallback) {
+          patch.title = re.title;
+          patch.description = re.description;
+          patch.shortAnswer = re.shortAnswer;
+        }
         patch.contentHash = contentHash;
       }
       if (enrichment.costPrice > 0) {
@@ -136,20 +154,26 @@ export async function applyResolution(
         patch.mrp = pricing.mrp;
         patch.price = pricing.price;
         patch.resellerPrice = pricing.price;
+        // Repost with new price/caption refreshes the 21-day window.
+        patch.expiresAt = new Date(Date.now() + 21 * 24 * 60 * 60 * 1000);
       }
-      patch.qualityScore = enrichment.qualityScore;
-      patch.confidence = enrichment.confidence;
-      const [existing] = await db
-        .select({ heroImage: products.heroImage, costPrice: products.costPrice, status: products.status })
-        .from(products)
-        .where(eq(products.id, resolution.productId))
-        .limit(1);
+      // Never overwrite higher existing quality/confidence.
+      if (!existing || enrichment.qualityScore > (existing.qualityScore ?? 0)) patch.qualityScore = enrichment.qualityScore;
+      if (!existing || enrichment.confidence > (existing.confidence ?? 0)) patch.confidence = enrichment.confidence;
       const finalHero = (patch.heroImage as string | undefined) || existing?.heroImage || "";
       const finalCost = (patch.costPrice as number | undefined) ?? existing?.costPrice ?? 0;
-      if (finalHero.startsWith("http") && finalCost > 0 && existing?.status === "pending_review") {
+      // Gate pending_review -> published: requires active auto-publish manufacturer AND no existing moderation flag.
+      let canAutoPublish = false;
+      if (existing?.manufacturerId) {
+        const { manufacturers } = await import("@/db/schema");
+        const [mfr] = await db.select({ autoPublish: manufacturers.autoPublish, status: manufacturers.status }).from(manufacturers).where(eq(manufacturers.id, existing.manufacturerId)).limit(1);
+        canAutoPublish = mfr?.status === "active" && mfr?.autoPublish === true;
+      }
+      if (finalHero.startsWith("http") && finalCost > 0 && existing?.status === "pending_review" && canAutoPublish && !existing?.moderationReason) {
         patch.status = "published";
         patch.publishedAt = new Date();
         patch.moderationReason = null;
+        if (!patch.expiresAt) patch.expiresAt = new Date(Date.now() + 21 * 24 * 60 * 60 * 1000);
       }
       await db.update(products).set(patch as never).where(eq(products.id, resolution.productId));
       return { stage: patch.status === "published" ? "published" : "updated", productId: resolution.productId };

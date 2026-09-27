@@ -1,5 +1,5 @@
 import { sanitizeSupplierCaption } from "@/lib/privacy";
-import groupMapping from "../../worker/group-mapping.json";
+import { approvedSupplierGroups } from "@/lib/supplier-groups";
 
 /**
  * MatzHub AI Enrichment Engine
@@ -1086,8 +1086,6 @@ export function scoreOrderRisk(o: {
  * automatically — adding one is an explicit edit here, reviewed in a PR.
  * `worker/group-mapping.json` mirrors these JIDs for the worker.
  */
-import { approvedSupplierGroups } from "@/lib/supplier-groups";
-
 /**
  * Sole source is src/lib/supplier-groups.ts (backed by worker/group-mapping.json).
  * Re-exported here for the deterministic ingestion and Telegram-routing test contracts.
