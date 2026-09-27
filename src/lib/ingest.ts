@@ -377,7 +377,7 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
   const slug = await uniqueSlug(`${enrichment.title}-${enrichment.color ?? ""}`);
   const sku = `MH-${(cat?.slug ?? "gen").slice(0, 3).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
-  const expiresAt = new Date(Date.now() + 45 * 24 * 60 * 60 * 1000);
+  const expiresAt = new Date(Date.now() + 21 * 24 * 60 * 60 * 1000);
 
   const inserted = await db
     .insert(products)
@@ -411,8 +411,8 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       price: pricing.price,
       resellerPrice: pricing.resellerPrice,
       marginPercent: pricing.marginPercent,
-      // Active supplier WhatsApp post carries live stock.
-      stockQty: 12,
+      // No fabricated stock: availability is expiry-based. Stock stays 0 unless supplier states quantity.
+      stockQty: 0,
       availability: "in_stock",
       status,
       qualityScore: enrichment.qualityScore,

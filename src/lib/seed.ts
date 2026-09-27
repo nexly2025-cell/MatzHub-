@@ -240,7 +240,7 @@ export async function seedPreviewCatalog() {
         mrp,
         price,
         resellerPrice: price,
-        stockQty: 12,
+        stockQty: 0,
         availability: "in_stock",
         status: "published",
         qualityScore: 86,
