@@ -638,3 +638,91 @@ export async function runSupplierScoreJob() {
   }
   return { processed };
 }
+
+/* ---------------- subscription-held release ---------------- */
+
+/**
+ * Release products held only because automatic uploads were paused.
+ *
+ * Group A criteria (observed production strings):
+ *  - status = 'pending_review', moderation_reason IS NULL
+ *  - hero_image is a valid https URL
+ *  - cost_price > 0 AND price > cost_price AND mrp >= price (real price floor: cost parsed from caption)
+ *  - category_id IS NOT NULL, message_id IS NOT NULL
+ *  - created_at within last 21 days (catalogue-wide 21-day expiry)
+ *  - manufacturer active AND auto_publish
+ *  - manufacturer source_group_id in authoritative JID list (worker/group-mapping.json)
+ *  - ops_tasks.detail = 'Automatic publishing is blocked: uploads are paused. ...' (reason string from ingest insert)
+ *
+ * On release: status='published', published_at=now(), expires_at=created_at+21d,
+ * resolve the ops_task, retire the Telegram moderation alert (notification claimed).
+ * Never releases missing-media or missing-price holds.
+ *
+ * Usage: `npx tsx scripts/release-held.ts --dry-run` for operator SQL, or import and call.
+ */
+export const HELD_RELEASE_REASON = "uploads are paused";
+export const HELD_RELEASE_DETAIL_PREFIX = "Automatic publishing is blocked: uploads are paused.";
+
+export async function releaseSubscriptionHeldProducts(opts: { dryRun?: boolean; limit?: number } = {}) {
+  const dryRun = process.argv.includes("--dry-run") || opts.dryRun === true;
+  const limit = opts.limit ?? 500;
+  // Authoritative JIDs from worker/group-mapping.json (single source via supplier-groups).
+  const { approvedSupplierGroups } = await import("@/lib/supplier-groups");
+  const jids = approvedSupplierGroups.map((g) => g.jid);
+  const sqlText = `
+SELECT p.id, p.slug, p.title, p.created_at, p.expires_at, p.hero_image, p.price, p.cost_price, p.mrp,
+       p.category_id, p.message_id, m.source_group_id, o.detail
+FROM products p
+JOIN manufacturers m ON m.id = p.manufacturer_id
+JOIN ops_tasks o ON o.entity_id = p.id AND o.status = 'open' AND o.detail LIKE 'Automatic publishing is blocked: uploads are paused.%'
+WHERE p.status = 'pending_review'
+  AND p.moderation_reason IS NULL
+  AND p.hero_image LIKE 'https://%'
+  AND p.cost_price > 0 AND p.price > p.cost_price AND p.mrp >= p.price
+  AND p.category_id IS NOT NULL AND p.message_id IS NOT NULL
+  AND p.created_at > now() - interval '21 days'
+  AND m.status = 'active' AND m.auto_publish = true
+  AND m.source_group_id = ANY($1)
+ORDER BY p.created_at DESC
+LIMIT ${Number(limit)};
+  `.trim();
+  if (dryRun) {
+    return { dryRun: true as const, reason: HELD_RELEASE_DETAIL_PREFIX, jids, sql: sqlText, priceFloor: "cost_price > 0 AND price > cost_price AND mrp >= price" };
+  }
+  const rows = await db.execute(sql`
+    SELECT p.id, p.slug, p.created_at
+    FROM products p
+    JOIN manufacturers m ON m.id = p.manufacturer_id
+    JOIN ops_tasks o ON o.entity_id = p.id AND o.status = 'open' AND o.detail LIKE 'Automatic publishing is blocked: uploads are paused.%'
+    WHERE p.status = 'pending_review'
+      AND p.moderation_reason IS NULL
+      AND p.hero_image LIKE 'https://%'
+      AND p.cost_price > 0 AND p.price > p.cost_price AND p.mrp >= p.price
+      AND p.category_id IS NOT NULL AND p.message_id IS NOT NULL
+      AND p.created_at > now() - interval '21 days'
+      AND m.status = 'active' AND m.auto_publish = true
+      AND m.source_group_id = ANY(${jids})
+    ORDER BY p.created_at DESC
+    LIMIT ${limit}
+  `).then((r) => r.rows as Array<{ id: string; slug: string; created_at: string }>);
+  const released: string[] = [];
+  for (const row of rows) {
+    await db.execute(sql`
+      WITH upd AS (
+        UPDATE products
+        SET status = 'published', published_at = now(), expires_at = created_at + interval '21 days', updated_at = now(), moderation_reason = NULL
+        WHERE id = ${row.id}::uuid AND status = 'pending_review' AND moderation_reason IS NULL
+        RETURNING id
+      )
+      UPDATE ops_tasks SET status = 'resolved', resolved_at = now()
+      WHERE entity_id = ${row.id}::uuid AND status = 'open' AND detail LIKE 'Automatic publishing is blocked: uploads are paused.%';
+    `);
+    // Retire Telegram moderation alert: mark related notification claimed (no delete).
+    await db.execute(sql`
+      UPDATE notifications SET status = 'retired'
+      WHERE template = 'moderation_needed' AND payload->>'productId' = ${row.id} AND status IN ('queued','sent');
+    `).catch(() => undefined);
+    released.push(row.id);
+  }
+  return { dryRun: false as const, released, count: released.length };
+}
