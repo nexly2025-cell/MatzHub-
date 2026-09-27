@@ -25,6 +25,18 @@
     {
       "path": "/api/cron/storage-sweep",
       "schedule": "0 4 * * *"
+    },
+    {
+      "path": "/api/cron/expire",
+      "schedule": "0 3 * * *"
+    },
+    {
+      "path": "/api/cron/trending",
+      "schedule": "0 * * * *"
+    },
+    {
+      "path": "/api/cron/watchdog",
+      "schedule": "*/30 * * * *"
     }
   ]
 }

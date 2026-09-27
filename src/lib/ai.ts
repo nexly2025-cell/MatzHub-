@@ -776,10 +776,10 @@ export function ungroundedClaims(caption: string, text: string): string[] {
   return found;
 }
 
-/* ------------- Gemini captioning (primary and only provider) -------------
- * Reads only GEMINI_API_KEY. Never blocks ingestion: any failure returns null
- * and the deterministic extractor has already produced a complete, publishable
- * record, so the product still ships.
+/* ------------- LLM captioning (Groq fast, Gemini richer, both optional) -------------
+ * Groq handles fast tasks; Gemini handles richer reasoning. Neither is mandatory.
+ * Any failure returns null and the deterministic extractor has already produced
+ * a complete, publishable record, so the product still ships (safe degradation).
  */
 
 const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -844,14 +844,55 @@ async function llmEnrich(
   grounded: Enrichment,
   timeoutMs = GEMINI_TIMEOUT_MS,
 ): Promise<Partial<Enrichment> | null> {
-  const key = process.env.GEMINI_API_KEY;
-  if (!key) return null;
-
   const cacheKey = enrichmentCacheKey(input, grounded);
   const cached = readEnrichmentCache(cacheKey);
   if (cached) return cached;
-
+  // Groq fast path first (cheap, low-latency). Gemini richer reasoning second. Both optional.
+  const groq = await callGroq(input, grounded, cacheKey);
+  if (groq) return groq;
+  const key = process.env.GEMINI_API_KEY;
+  if (!key) return null;
   return withGeminiSlot(() => callGemini(key, input, grounded, cacheKey, timeoutMs));
+}
+
+async function callGroq(
+  input: EnrichmentInput,
+  grounded: Enrichment,
+  cacheKey: string,
+): Promise<Partial<Enrichment> | null> {
+  const key = process.env.GROQ_API_KEY;
+  if (!key) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  try {
+    const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
+      method: "POST",
+      signal: controller.signal,
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
+      body: JSON.stringify({
+        model: process.env.GROQ_MODEL || "llama-3.1-8b-instant",
+        temperature: 0.2,
+        max_tokens: 1024,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: "You are MatzHub's fast product copy editor. Return ONLY valid minified JSON, no markdown." + ANTI_FABRICATION_RULES },
+          { role: "user", content: buildPrompt(input, grounded) },
+        ],
+      }),
+    });
+    if (!res.ok) return null;
+    const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
+    const raw = json.choices?.[0]?.message?.content ?? "";
+    if (!raw.trim()) return null;
+    const parsed = JSON.parse(raw) as Partial<Enrichment>;
+    parsed.specs = groundSpecs(input.caption, parsed.specs);
+    rememberEnrichment(cacheKey, parsed);
+    return parsed;
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function callGemini(
@@ -987,7 +1028,7 @@ export async function enrichProduct(input: EnrichmentInput): Promise<Enrichment>
     seoDescription: cleanProse(clampStr(ai.seoDescription, 158, base.seoDescription), base.costPrice),
     altText: cleanTitleText(clampStr(ai.altText, 160, base.altText), finalCat, finalBrand),
     variants: Array.isArray(ai.variants) && ai.variants.length ? ai.variants.slice(0, 12) : base.variants,
-    costPrice: Number.isFinite(ai.costPrice) && Number(ai.costPrice) > 0 ? Math.round(Number(ai.costPrice)) : base.costPrice,
+    costPrice: Number.isFinite(ai.costPrice) && Number(ai.costPrice) > 0 && extractNumbers(input.caption).includes(Math.round(Number(ai.costPrice))) ? Math.round(Number(ai.costPrice)) : base.costPrice,
     mrp: Number.isFinite(ai.mrp) && Number(ai.mrp) > 0 ? Math.round(Number(ai.mrp)) : base.mrp,
     confidence: Number.isFinite(ai.confidence) ? Math.min(1, Math.max(0, Number(ai.confidence))) : base.confidence,
     model: process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL,
