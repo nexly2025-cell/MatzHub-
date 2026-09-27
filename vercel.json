@@ -11,20 +11,12 @@
   },
   "crons": [
     {
-      "path": "/api/health",
-      "schedule": "*/5 * * * *"
-    },
-    {
       "path": "/api/cron/subscription",
-      "schedule": "*/15 * * * *"
+      "schedule": "15 1 * * *"
     },
     {
       "path": "/api/cron/digest",
       "schedule": "30 2 * * *"
-    },
-    {
-      "path": "/api/cron/storage-sweep",
-      "schedule": "0 4 * * *"
     },
     {
       "path": "/api/cron/expire",
@@ -32,11 +24,15 @@
     },
     {
       "path": "/api/cron/trending",
-      "schedule": "0 * * * *"
+      "schedule": "20 3 * * *"
     },
     {
       "path": "/api/cron/watchdog",
-      "schedule": "*/30 * * * *"
+      "schedule": "40 3 * * *"
+    },
+    {
+      "path": "/api/cron/storage-sweep",
+      "schedule": "0 4 * * *"
     }
   ]
 }
