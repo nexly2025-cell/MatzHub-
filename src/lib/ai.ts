@@ -237,8 +237,11 @@ export function detectCategory(caption: string, groupName?: string | null, fallb
 }
 
 function detectFrom(list: string[], caption: string): string | null {
-  const c = caption.toLowerCase();
-  const found = list.filter((w) => c.includes(w)).sort((a, b) => b.length - a.length);
+  const c = ` ${caption.toLowerCase()} `;
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const found = list
+    .filter((w) => new RegExp(`(?<![a-z0-9])${esc(w.toLowerCase())}(?![a-z0-9])`).test(c))
+    .sort((a, b) => b.length - a.length);
   return found[0] ? titleCase(found[0]) : null;
 }
 
@@ -262,7 +265,7 @@ function detectVariants(caption: string): Array<{ label: string; axis: "size" | 
   if (!out.length && /\b(s\s*[,/]\s*m\s*[,/]\s*l|small.*medium.*large)\b/i.test(caption)) {
     ["S", "M", "L", "XL"].forEach((l) => out.push({ label: l, axis: "size" }));
   }
-  if (!out.length) out.push({ label: "Free Size", axis: "size" });
+  if (!out.length && /\bfree\s*size\b/i.test(caption)) out.push({ label: "Free Size", axis: "size" });
   return out.slice(0, 12);
 }
 
@@ -1013,17 +1016,7 @@ export const captionSimilarity = (a: string, b: string): number => {
   return inter / Math.max(A.size, B.size);
 };
 
-/** 0-1 similarity by hex char matches of hash digests. Bounded and deterministic. */
-export const imageHashSimilarity = (a: string, b: string): number => {
-  if (a === b) return 1;
-  if (!a || !b) return 0;
-  const { createHash } = require("node:crypto");
-  const ha = createHash("sha256").update(a).digest("hex");
-  const hb = createHash("sha256").update(b).digest("hex");
-  let same = 0;
-  for (let i = 0; i < Math.min(ha.length, hb.length); i += 1) if (ha[i] === hb[i]) same += 1;
-  return same / Math.max(ha.length, hb.length);
-};
+/* imageHashSimilarity removed: hash-digest char similarity is not a visual signal; dedupe uses exact hash equality plus caption similarity. */
 
 export const ORIGINAL_MARKUP_PERCENT = 40;
 export const SELLING_MARGIN_PERCENT = 15;
@@ -1093,20 +1086,17 @@ export function scoreOrderRisk(o: {
  * automatically — adding one is an explicit edit here, reviewed in a PR.
  * `worker/group-mapping.json` mirrors these JIDs for the worker.
  */
-type SupplierGroupMapping = {
-  names?: Array<{ jid: string; name: string; category: string }>;
-};
+import { approvedSupplierGroups } from "@/lib/supplier-groups";
 
 /**
- * Shared source of truth for the fixed nine production supplier JIDs. The
- * worker consumes the same JSON file directly; this export exists for the
- * deterministic ingestion and Telegram-routing test contracts.
+ * Sole source is src/lib/supplier-groups.ts (backed by worker/group-mapping.json).
+ * Re-exported here for the deterministic ingestion and Telegram-routing test contracts.
  */
 export const AUTHORITATIVE_GROUPS: ReadonlyArray<{
   jid: string;
   name: string;
   category: string;
-}> = (groupMapping as SupplierGroupMapping).names ?? [];
+}> = approvedSupplierGroups.map(({ jid, name, category }) => ({ jid, name, category }));
 
 const AUTHORITATIVE_BY_JID = new Map(AUTHORITATIVE_GROUPS.map((g) => [g.jid, g]));
 
