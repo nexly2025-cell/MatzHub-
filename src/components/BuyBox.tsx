@@ -54,9 +54,14 @@ export default function BuyBox({
   };
 
   const off = savePercent(p.mrp, p.price);
-  const soldOut = p.availability === "out_of_stock";
+  // Availability model: available if active and not expired. Catalogue-wide 21-day expiry is the model;
+  // discontinued (or legacy out_of_stock) is the only unavailable state. Unmetered (stockQty 0) is orderable.
+  const isAvailable = p.availability !== "discontinued" && p.availability !== "out_of_stock";
+  const soldOut = !isAvailable;
   const selectedVariant = variants.find((v) => v.label === variant);
-  const unavailable = soldOut || selectedVariant?.stockQty === 0;
+  // Metered variants (stockQty > 0) with insufficient stock are disabled; unmetered (0) remain selectable.
+  const isVariantInsufficient = (v: { stockQty: number } | undefined) => Boolean(v && v.stockQty > 0 && v.stockQty < qty);
+  const unavailable = soldOut || isVariantInsufficient(selectedVariant);
 
   // One order format for the whole site. The cart builds the same message from
   // the same helper, so a single-item "Buy on WhatsApp" and a cart checkout
@@ -66,7 +71,7 @@ export default function BuyBox({
   ];
   const orderHref = (): string =>
     soldOut
-      ? waLink(`Hi MatzHub, is this back in stock?\n${p.title}${variant ? ` (${variant})` : ""}\nSKU ${p.sku}`)
+      ? waLink(`Hi MatzHub, please confirm availability.\n${p.title}${variant ? ` (${variant})` : ""}\nSKU ${p.sku}\n${typeof window !== "undefined" ? window.location.href : `/p/${p.slug}`}`)
       : waLink(buildOrderMessage(asLine()));
   useEffect(() => {
     pushRecent(p.id);
@@ -111,7 +116,7 @@ export default function BuyBox({
           </p>
         </div>
 
-        {variants.length > 1 && (
+        {isAvailable && variants.length > 1 && (
           <fieldset className="mt-5">
             <legend className="eyebrow mb-2.5">Size</legend>
             <div className="flex flex-wrap gap-2">
@@ -120,19 +125,19 @@ export default function BuyBox({
                   key={v.id}
                   type="button"
                   onClick={() => setVariant(v.label)}
-                  disabled={v.stockQty === 0}
+                  disabled={v.stockQty > 0 && v.stockQty < qty}
                   data-on={variant === v.label}
                   className="chip min-w-[44px] justify-center disabled:opacity-30 disabled:line-through"
                   aria-pressed={variant === v.label}
                 >
                   {v.label}
-                  {v.stockQty > 0 && v.stockQty < 3 && <span className="text-[9px] text-danger">!</span>}
                 </button>
               ))}
             </div>
           </fieldset>
         )}
 
+        {isAvailable && (
         <div className="mt-6 flex items-center gap-3">
           <div className="flex items-center rounded-full border border-linestrong">
             <button type="button" onClick={() => setQty((q) => Math.max(1, q - 1))} className="h-11 w-11 text-lg text-muted hover:text-ink" aria-label="Decrease quantity">−</button>
@@ -140,6 +145,7 @@ export default function BuyBox({
             <button type="button" onClick={() => setQty((q) => Math.min(MAX_QTY_PER_LINE, q + 1))} className="h-11 w-11 text-lg text-muted hover:text-ink" aria-label="Increase quantity">+</button>
           </div>
         </div>
+        )}
 
         {/* Primary WhatsApp-first commerce action */}
         <a
@@ -158,7 +164,7 @@ export default function BuyBox({
           disabled={unavailable}
           className="btn btn-solid mt-2.5 w-full bg-ink text-oninverse hover:opacity-90"
         >
-          {addedSuccess ? "✓ Added to Cart" : soldOut ? "Sold out" : "Add to Cart"}
+          {addedSuccess ? "✓ Added to Cart" : "Add to Cart"}
         </button>
 
         <div className="mt-2.5 grid grid-cols-2 gap-2.5">
@@ -196,12 +202,7 @@ ${url}`).catch(() => undefined);
             <dt className="w-24 shrink-0 pt-0.5 text-[10px] uppercase tracking-[0.14em] text-subtle">Replacement</dt>
             <dd className="flex-1 text-ink">Free inside one week if it isn&apos;t as shown</dd>
           </div>
-          <div className="flex gap-3">
-            <dt className="w-24 shrink-0 pt-0.5 text-[10px] uppercase tracking-[0.14em] text-subtle">Available</dt>
-            <dd className="flex-1 text-ink">
-              {p.availability === "low_stock" ? `Last ${p.stockQty} pieces` : p.availability === "out_of_stock" ? "Sold out" : "In stock"}
-            </dd>
-          </div>
+
         </dl>
 
         <div className="mt-5 rounded-xl border border-line p-4" style={{ background: "var(--c-accent-soft)" }}>
@@ -237,7 +238,7 @@ ${url}`).catch(() => undefined);
             disabled={unavailable}
             className="btn btn-solid h-12 flex-1 text-[14px] bg-ink text-oninverse hover:opacity-90"
           >
-            {addedSuccess ? "✓ Added" : soldOut ? "Sold out" : "Add to Cart"}
+            {addedSuccess ? "✓ Added" : "Add to Cart"}
           </button>
         </div>
       </div>

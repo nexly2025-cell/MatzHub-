@@ -51,7 +51,7 @@ export function buildOrderMessage(cart: CartItem[]): string {
     "📦 Delivery details:",
     "[name, address, pincode]",
     "",
-    `Order reference: ${SITE.url}/cart`,
+    ...(cart.length === 1 && cart[0].slug ? [`Product: ${SITE.url}/p/${cart[0].slug}`] : [`Order reference: ${SITE.url}/cart`]),
     "",
     "Thank you.",
   ].join("\n");

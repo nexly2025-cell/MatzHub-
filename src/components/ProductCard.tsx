@@ -48,23 +48,10 @@ export default function ProductCard({ p, priority = false }: { p: PC; priority?:
               discounted low-stock piece rendered them on top of each other.
               They stack now, and availability wins the eye when it matters. */}
           <div className="pointer-events-none absolute left-3 top-3 flex flex-col items-start gap-1.5">
-            {p.availability === "out_of_stock" ? (
-              <span className="label rounded-full bg-surface/92 px-2.5 py-1 text-muted backdrop-blur-sm">
-                Sold out
+            {off > 0 && (
+              <span className="label rounded-full bg-surface/92 px-2.5 py-1 font-medium text-accent backdrop-blur-sm">
+                -{off}%
               </span>
-            ) : (
-              <>
-                {off > 0 && (
-                  <span className="label rounded-full bg-surface/92 px-2.5 py-1 font-medium text-accent backdrop-blur-sm">
-                    -{off}%
-                  </span>
-                )}
-                {p.availability === "low_stock" && (
-                  <span className="label rounded-full bg-surface/92 px-2.5 py-1 text-ink backdrop-blur-sm">
-                    Nearly gone
-                  </span>
-                )}
-              </>
             )}
           </div>
 
