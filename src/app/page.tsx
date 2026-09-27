@@ -30,7 +30,7 @@ export const metadata: Metadata = {
 const TRUST = [
   ["Quality-scored", "Inspected against a fixed rubric before listing"],
   ["7-day replacement", "Not as shown, replaced free"],
-  ["≤5 hrs", "Dispatch on in-stock orders"],
+  ["24–48 hrs", "Dispatch on available orders"],
   ["Pan-India", "Delivered nationwide"],
 ];
 

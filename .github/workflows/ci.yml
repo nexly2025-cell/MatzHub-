@@ -31,6 +31,13 @@ jobs:
 
       - name: Privacy invariant
         run: |
-          PUBLIC_PATTERNS="Partner [A-E]-01|costPrice|cost_price|manufacturerId|source_group|sourceGroup"
-          FILES=$(find src/app src/components -type f \( -name "*.tsx" -o -name "*.ts" \) | grep -v "__tests__" | grep -v "/admin" | grep -v "/api/")
+          PUBLIC_PATTERNS="costPrice|cost_price|manufacturerId|manufacturer_id|sourceGroupId|source_group_id|sourceGroupName|resellerPrice|reseller_price|marginPercent|margin_percent|messageId|message_id|imageHash|contentHash"
+          FILES=$(find src/app src/components -type f \( -name "*.tsx" -o -name "*.ts" \) | grep -v "__tests__" | grep -v "/admin" | grep -v "/api/cron" | grep -v "/api/ingest" | grep -v "/api/telegram")
           echo "$FILES" | xargs grep -E "$PUBLIC_PATTERNS" && { echo "Privacy leak detected: public surface references forbidden fields"; exit 1; } || echo "Privacy invariant holds"
+      - name: Privacy negative control
+        run: |
+          echo 'const leak = costPrice;' > /tmp/privacy_negative.ts
+          cp src/components/ProductCard.tsx /tmp/ProductCard.bak
+          echo 'const _leak = "costPrice sourceGroupId";' >> src/components/ProductCard.tsx
+          if find src/app src/components -type f \( -name "*.tsx" -o -name "*.ts" \) | grep -v "__tests__" | grep -v "/admin" | grep -v "/api/cron" | grep -v "/api/ingest" | grep -v "/api/telegram" | xargs grep -Eq "costPrice|sourceGroupId"; then echo "Negative control correctly fails on injected leak"; else echo "Negative control FAILED to detect leak"; exit 1; fi
+          mv /tmp/ProductCard.bak src/components/ProductCard.tsx

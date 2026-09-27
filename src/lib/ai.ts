@@ -529,7 +529,7 @@ export function deterministicEnrich(input: EnrichmentInput): Enrichment {
   const faqs = [
     { q: `Is this ${catLabel.toLowerCase()} an original branded product?`, a: `No. This is imported first-copy, master-quality merchandise. MatzHub is not affiliated with, endorsed by or licensed by any original brand, and we state this openly on every listing.` },
     { q: "Who makes it?", a: "Our sourcing partners are verified but their identity is private — that's the agreement that keeps pricing honest. Every partner is quality-scored before their stock is listed." },
-    { q: "How long does delivery take?", a: "Orders are dispatched within ≤5 hours. Metro cities receive in 2–4 days, rest of India in 4–7 days." },
+    { q: "How long does delivery take?", a: "Orders are dispatched within 24–48 hours. Metro cities receive in 2–4 days, rest of India in 4–7 days." },
     { q: "How do I pay?", a: "Payment is arranged directly with our team over WhatsApp once your order is confirmed. Cash on delivery is not offered." },
     { q: "Can I return or replace it?", a: "Yes. You get a 7-day replacement window if the product does not match the listing photo or arrives damaged." },
     { q: "Can I resell this product?", a: "Yes — that is exactly what MatzHub is built for. Resellers get the listing images, details and a share link they can pass to their own customers at whatever price they choose." },

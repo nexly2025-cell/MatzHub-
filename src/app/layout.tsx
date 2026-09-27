@@ -17,7 +17,7 @@ export const metadata: Metadata = {
     template: `%s | ${SITE.name}`,
   },
   description:
-    "MatzHub curates imported master-quality watches, handbags, footwear, eyewear, apparel and perfumes. Honest pricing from real manufacturer cost. Dispatch within 5 hours, 7-day replacement.",
+    "MatzHub curates imported master-quality watches, handbags, footwear, eyewear, apparel and perfumes. Honest pricing from real manufacturer cost. Dispatch within 24–48 hours, 7-day replacement.",
   keywords: [
     "premium imported fashion india",
     "imported first copy watches",

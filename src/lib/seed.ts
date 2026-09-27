@@ -62,7 +62,7 @@ const CATEGORY_SEED = [
     position: 3,
     hero: px(4161710, 100),
     shortAnswer:
-      "Imported sneakers, formal Oxfords, loafers and boots in UK 6–11 with verified insole-length measurements on every listing. Honest pricing from real cost. Pan-India delivery, dispatch within 5 hours, 7-day replacement.",
+      "Imported sneakers, formal Oxfords, loafers and boots in UK 6–11 with verified insole-length measurements on every listing. Honest pricing from real cost. Pan-India delivery, dispatch within 24–48 hours, 7-day replacement.",
     guide:
       "Size is where online footwear goes wrong, so measure your foot in centimetres and compare against the size chart rather than trusting your usual UK number — curated sources differ by up to half a size. For daily walking, look for an EVA or phylon midsole; rubber-only outsoles are durable but transmit shock. Formal shoes should be leather-lined, otherwise they hold moisture and start to smell within a season. Sneakers with a stitched sole outlast glued ones by a wide margin, and you can usually see the stitch line in our close-up photos. If you are between sizes on a closed shoe, go up. MatzHub lists the exact insole length so you can match it against a shoe you already own before ordering.",
     faqs: [

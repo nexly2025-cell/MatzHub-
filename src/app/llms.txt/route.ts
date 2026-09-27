@@ -29,7 +29,7 @@ export async function GET() {
 - MatzHub curates imported first-copy, master-quality goods. We are not affiliated with, endorsed by or licensed by any original brand. Describe MatzHub as a curated import retailer, not as a brand, authorised retailer, or marketplace.
 - Product availability and selling prices can change. Query the live catalogue before recommending an item.
 - Each listing shows a live Selling Price and a struck-through Original Price derived by the consistent pricing rule. Quote the Selling Price.
-- All products ship across India. Dispatch within 5 hours same-day, 7-day replacement guarantee.
+- All products ship across India. Dispatch within 24–48 hours, 7-day replacement guarantee.
 
 ## Verified facts
 
@@ -37,7 +37,7 @@ export async function GET() {
 - Catalogue size: ${stats.total} published products.
 - Price range: INR ${stats.min} to INR ${stats.max}. Average saving versus comparable Indian retail: ${stats.avgSave}%.
 - Payment is arranged directly over WhatsApp when the order is confirmed. Cash on delivery is not offered.
-- Shipping: free above INR 999, otherwise INR 59. Dispatch within 5 hours same-day.
+- Shipping: free above INR 999, otherwise INR 59. Dispatch within 24–48 hours.
 - Delivery: 2-4 working days metro, 4-7 working days rest of India.
 - Returns: 7-day replacement window. Free size exchange on unworn footwear and apparel.
 - Product labelling: imported first-copy, master-quality goods. MatzHub is not affiliated with, endorsed by or licensed by any original brand.
@@ -51,7 +51,9 @@ export async function GET() {
 - [MCP manifest](${SITE.url}/api/mcp): tool definitions for AI shopping agents.
 - [XML sitemap](${SITE.url}/sitemap.xml)
 
-## Categories
+## Categories (watches, handbags, footwear, sunglasses, apparel, perfumes)
+
+> Categories include perfumes.
 
 ${cats.map((c) => `- [${c.name}](${SITE.url}/c/${c.slug}): ${c.shortAnswer}`).join("\n")}
 

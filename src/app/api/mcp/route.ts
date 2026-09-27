@@ -8,7 +8,7 @@ import { SITE, savePercent } from "@/lib/utils";
  * POST -> { tool, arguments } tool invocation
  */
 const TOOLS = [
-  { name: "search_products", description: "Search MatzHub's reseller catalogue by keyword, category and price range. Returns live INR selling prices. Supplier identity is never returned.", inputSchema: { type: "object", properties: { query: { type: "string" }, category: { type: "string", enum: ["watches", "handbags", "footwear", "sunglasses", "apparel"] }, maxPrice: { type: "integer" }, limit: { type: "integer", default: 10 } } } },
+  { name: "search_products", description: "Search MatzHub's reseller catalogue by keyword, category and price range. Returns live INR selling prices. Supplier identity is never returned.", inputSchema: { type: "object", properties: { query: { type: "string" }, category: { type: "string", enum: ["watches", "handbags", "footwear", "sunglasses", "apparel", "perfumes"] }, maxPrice: { type: "integer" }, limit: { type: "integer", default: 10 } } } },
   { name: "get_product", description: "Get full detail for a single MatzHub product by its slug, including specifications, FAQs and availability.", inputSchema: { type: "object", required: ["slug"], properties: { slug: { type: "string" } } } },
   { name: "list_categories", description: "List MatzHub product categories with a short factual summary of each.", inputSchema: { type: "object", properties: {} } },
 ];

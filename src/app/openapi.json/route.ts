@@ -22,7 +22,7 @@ export function GET() {
           summary: "Search the published catalogue",
           parameters: [
             { name: "q", in: "query", schema: { type: "string" }, description: "Free-text query across title, description, brand, colour and tags" },
-            { name: "category", in: "query", schema: { type: "string", enum: ["watches", "handbags", "footwear", "sunglasses", "apparel"] } },
+            { name: "category", in: "query", schema: { type: "string", enum: ["watches", "handbags", "footwear", "sunglasses", "apparel", "perfumes"] } },
             { name: "min", in: "query", schema: { type: "integer" }, description: "Minimum price in INR" },
             { name: "max", in: "query", schema: { type: "integer" }, description: "Maximum price in INR" },
             { name: "sort", in: "query", schema: { type: "string", enum: ["trending", "new", "price_asc", "price_desc", "discount"] } },
