@@ -184,6 +184,7 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
           stockQty: products.stockQty,
           availability: products.availability,
           status: products.status,
+          expiresAt: products.expiresAt,
           manufacturerId: products.manufacturerId,
         })
         .from(products)
@@ -201,8 +202,11 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
       }
 
       const resolved = lines.map((line) => {
-        const product = byId.get(line.productId)!;
-        if (product.status !== "published" || product.availability === "out_of_stock") {
+        const product = byId.get(line.productId)! as typeof line.product & { expiresAt?: Date | null };
+        if (product.status !== "published" || product.availability === "discontinued" || (product as unknown as { availability: string }).availability === "out_of_stock") {
+          throw new OrderRequestError(`${product.title} is no longer available.`, 409, "unavailable_product");
+        }
+        if ((product as unknown as { expiresAt?: Date | null }).expiresAt && new Date((product as unknown as { expiresAt: Date }).expiresAt).getTime() < Date.now()) {
           throw new OrderRequestError(`${product.title} is no longer available.`, 409, "unavailable_product");
         }
         const variantsForProduct = variantsByProduct.get(product.id) ?? [];
@@ -210,7 +214,8 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
         if (variantsForProduct.length && !variant) {
           throw new OrderRequestError(`Choose an available variant for ${product.title}.`, 409, "variant_required");
         }
-        if (variant && variant.stockQty < line.qty) {
+        // Metered (stockQty > 0) enforce quantity; unmetered (0) remain selectable without sold-out language.
+        if (variant && variant.stockQty > 0 && variant.stockQty < line.qty) {
           throw new OrderRequestError(`${variant.label} is no longer available in that quantity.`, 409, "variant_unavailable");
         }
         return { ...line, product, variant };
@@ -251,37 +256,41 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
         .returning({ id: orders.id });
 
       for (const line of resolved) {
-        if (line.variant) {
+        if (line.variant && line.variant.stockQty > 0) {
           const [variantUpdated] = await tx
             .update(productVariants)
             .set({ stockQty: sql`greatest(0, ${productVariants.stockQty} - ${line.qty})` })
             .where(and(eq(productVariants.id, line.variant.id), gte(productVariants.stockQty, line.qty)))
             .returning({ id: productVariants.id });
-          if (!variantUpdated) throw new OrderRequestError(`${line.variant.label} just sold out. Please try again.`, 409, "variant_unavailable");
+          if (!variantUpdated) throw new OrderRequestError(`${line.variant.label} is no longer available in that quantity.`, 409, "variant_unavailable");
         }
 
-        const [productUpdated] = await tx
-          .update(products)
-          .set({
-            stockQty: sql`greatest(0, ${products.stockQty} - ${line.qty})`,
-            availability: sql`case
-              when ${products.stockQty} - ${line.qty} <= 0 then 'out_of_stock'
-              when ${products.stockQty} - ${line.qty} < 5 then 'low_stock'
-              else ${products.availability}
-            end`,
-            orders: sql`${products.orders} + ${line.qty}`,
-            updatedAt: new Date(),
-          })
-          .where(
-            and(
-              eq(products.id, line.product.id),
-              eq(products.status, "published"),
-              ne(products.availability, "out_of_stock"),
-              gte(products.stockQty, line.qty),
-            ),
-          )
-          .returning({ id: products.id });
-        if (!productUpdated) throw new OrderRequestError(`${line.product.title} just sold out. Please try again.`, 409, "unavailable_product");
+        if (line.product.stockQty > 0) {
+          const [productUpdated] = await tx
+            .update(products)
+            .set({
+              stockQty: sql`greatest(0, ${products.stockQty} - ${line.qty})`,
+              orders: sql`${products.orders} + ${line.qty}`,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(products.id, line.product.id),
+                eq(products.status, "published"),
+                ne(products.availability, "discontinued"),
+                gte(products.stockQty, line.qty),
+                sql`${products.expiresAt} > now()`,
+              ),
+            )
+            .returning({ id: products.id });
+          if (!productUpdated) throw new OrderRequestError(`${line.product.title} is no longer available.`, 409, "unavailable_product");
+        } else {
+          // Unmetered: record demand without decrementing or claiming sold out.
+          await tx
+            .update(products)
+            .set({ orders: sql`${products.orders} + ${line.qty}`, updatedAt: new Date() })
+            .where(and(eq(products.id, line.product.id), eq(products.status, "published")));
+        }
 
         await tx.insert(orderItems).values({
           orderId: created.id,
