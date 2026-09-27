@@ -29,7 +29,7 @@ Telegram    ──►  admin + dev bots  →  Vercel webhooks  →  worker contr
 | CI + backups         | GitHub Actions                   | Typecheck, lint, tests, build, nightly `pg_dump`.   |
 
 **What is not part of the architecture:** DigitalOcean droplets,
-Railway, Render, a developer laptop, a Codespace, `docker compose up`, or any
+Railway a developer laptop, a Codespace, `docker compose up`, or any
 "just run `node whatsapp-worker.mjs` locally" story. If you see instructions
 pointing at any of those in older README revisions, ignore them.
 
@@ -141,11 +141,11 @@ protocol constraint, not a MatzHub design choice.
 
 The only production-appropriate hosts are ones that give you a long-lived, persistent Node runtime with storage that survives process restarts. **Pick one** (do not run two):
 
-- **AWS EC2 (Recommended VM)** — Perfect for running the worker 24/7. An Amazon Linux / Ubuntu `t2.micro` or `t3.micro` instance (free tier) is exceptionally robust. You can run the worker directly under `pm2` (with auto-restart and system boot recovery) or via Docker.
-- **Fly.io (Recommended Serverless Container)** — Small free tier, Mumbai region (`bom`), ~$0-2/mo. The `worker/Dockerfile` targets this shape (exposes 8081, mounts `/data`, healthchecks `/health`).
-- Render, Northflank, Koyeb, or other persistent VM / Docker container providers.
+- **persistent worker host** — Perfect for running the worker 24/7. An Amazon Linux / Ubuntu `t2.micro` or `t3.micro` instance (free tier) is exceptionally robust. You can run the worker directly under `pm2` (with auto-restart and system boot recovery) or via Docker.
+- **worker host** — Small free tier, Mumbai region (`bom`), ~$0-2/mo. The `worker/Dockerfile` targets this shape (exposes 8081, mounts `/data`, healthchecks `/health`).
+- Northflank, Koyeb, or other persistent VM / Docker container providers.
 
-### Deploy to AWS EC2 (VM Example)
+### Deploy to persistent worker host
 
 EC2 provides a highly resilient, isolated virtual machine. By setting up the worker under **Docker** with restart policies, or under **PM2**, the worker automatically restarts if it crashes, and automatically recovers when the EC2 instance is rebooted.
 
@@ -243,7 +243,7 @@ docker run -d --name matzhub-worker --restart unless-stopped \
    curl http://localhost:8081/health
    ```
 
-### Deploy to Fly.io (canonical example)
+### Deploy to worker host
 
 ```bash
 cd worker
@@ -364,7 +364,7 @@ If any of these fail, `OPS.md` → "Diagnosing" covers each one.
 ## What is NOT required
 
 - **No local machine 24/7.** The Vercel app is stateless; the worker runs on
-  Fly.io (or equivalent); Supabase holds all state; Cloudflare + Vercel serve
+  worker host; Supabase holds all state; Cloudflare + Vercel serve
   the edge. Turning off your laptop changes nothing in production.
 - **No docker-compose in production.** Compose is dev-only convenience and is
   not shipped in this repo.

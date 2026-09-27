@@ -147,10 +147,15 @@ const CATEGORY_SPEC_SCHEMA: Record<string, { labels: string[]; fields: Record<st
   },
 };
 
+// Derived from actual brands observed in ingestion_events (last 90 days) + closed allowlist.
+// Do not add a brand without live caption evidence. Word-boundary matching prevents occasion->Casio.
 const BRAND_HINTS = [
   "rolex", "casio", "fossil", "titan", "seiko", "daniel wellington", "gucci", "prada", "coach",
   "nike", "adidas", "puma", "woodland", "bata", "rayban", "ray-ban", "oakley", "levis", "levi's",
   "zara", "h&m", "tommy", "calvin klein",
+  "cartier", "tissot", "omega", "tudor", "rado", "bvlgari", "versace", "tag heuer", "audemars piguet",
+  "patek philippe", "rado", "lacoste", "amouage", "burberry", "michael kors", "louis vuitton",
+  "onitsuka tiger", "emporio armani", "loropiana", "loro piana",
 ];
 
 const STOPWORDS = new Set([

@@ -4,7 +4,7 @@ Day-to-day runbook. First-time deployment lives in `DEPLOYMENT.md`; this file
 assumes production is already up.
 
 Architecture in one sentence: **Vercel serves the app + APIs + cron, a
-persistent Node worker (AWS EC2 / Fly.io / any Docker host) holds the Baileys WhatsApp
+persistent Node worker (persistent worker host / worker host / any Docker host) holds the Baileys WhatsApp
 socket, Supabase is the database and storage, Cloudflare is DNS/TLS at the
 edge, Telegram is the operator control plane, and GitHub Actions handles CI +
 nightly backups.**
@@ -33,7 +33,7 @@ cd worker && npm install && node whatsapp-worker.mjs
 ```
 
 That worker is for local testing only. Production runs the same file, on
-AWS EC2 or Fly.io, permanently. See `DEPLOYMENT.md` → "WhatsApp worker".
+persistent worker host or worker host, permanently. See `DEPLOYMENT.md` → "WhatsApp worker".
 
 ---
 
@@ -263,8 +263,8 @@ Check state any time with `/payment` in the admin bot.
   Never run `docker volume rm wa-session` — that volume *is* the WhatsApp
   pairing, and deleting it is the only normal-operations action that forces a
   re-scan.
-- AWS EC2 (PM2): `pm2 status`, `pm2 logs`, `pm2 restart matzhub-worker`.
-- Fly.io: `fly status -a matzhub-worker && fly logs -a matzhub-worker`.
+- persistent worker host: `pm2 status`, `pm2 logs`, `pm2 restart matzhub-worker`.
+- worker host: `fly status -a matzhub-worker && fly logs -a matzhub-worker`.
 - Restart: `fly apps restart matzhub-worker` or `pm2 restart matzhub-worker` (or your host's equivalent).
 - Session persists in Supabase; no QR after restart.
 

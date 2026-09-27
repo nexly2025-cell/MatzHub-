@@ -15,7 +15,7 @@ in here is theatre.
 - Node 20+ installed locally
 - A Supabase project (you already have one)
 - A Vercel account with the GitHub App connected to your repo
-- A Fly.io account (`brew install flyctl` / `curl -L https://fly.io/install.sh | sh`, then `fly auth login`)
+- A worker host account (`brew install flyctl` / `curl -L https://fly.io/install.sh | sh`, then `fly auth login`)
 - A Cloudflare account with `matzhub.com` zone (only for the final DNS step)
 - Two Telegram bots created via @BotFather (you already have them)
 
@@ -93,7 +93,7 @@ npm run preflight -- --skip=worker
 ```
 
 Must print `✓ GO — all checks passed` (WARNs on optional services like
-Cashfree/OpenAI are fine). Any `✗ FAIL` is a real blocker; fix it before
+Cashfree/AI (Groq/Gemini) are fine). Any `✗ FAIL` is a real blocker; fix it before
 continuing.
 
 Worker is skipped here because it isn't deployed yet — Step 7 covers it.
@@ -132,11 +132,11 @@ git push origin main
 
 ---
 
-## STEP 7 — Deploy the WhatsApp worker to AWS EC2 or Fly.io
+## STEP 7 — Deploy the WhatsApp worker to persistent worker host or worker host
 
-The worker is the ONLY component that needs a persistent host. This step handles that. You can choose AWS EC2 (Highly recommended VM, free-tier eligible) or Fly.io.
+The worker is the ONLY component that needs a persistent host. This step handles that. You can choose persistent worker host or worker host.
 
-### Option A: Deploy to AWS EC2 (VM with Auto-Recovery)
+### Option A: Deploy to persistent worker host
 
 Setting up the worker directly on an Ubuntu/Amazon Linux EC2 instance ensures 100% reliability, zero-latency connections if hosted close to your DB, and robust auto-recovery across crashes or host reboots using PM2.
 
@@ -184,9 +184,9 @@ Setting up the worker directly on an Ubuntu/Amazon Linux EC2 instance ensures 10
 
 ---
 
-### Option B: Deploy to Fly.io (Container with Volume)
+### Option B: Deploy to worker host
 
-If you prefer containerized deployment on Fly.io:
+If you prefer containerized deployment on worker host:
 
 ```bash
 cd worker
@@ -402,10 +402,10 @@ Detailed runbook is in `OPS.md`.
   does.
 - Docker Compose. There is no compose file in this repo. If you see one
   referenced elsewhere, it's stale.
-- Multiple deployment options for the worker. Pick AWS EC2, Fly.io, or GCE e2-micro
+- Multiple deployment options for the worker. Pick persistent worker host, worker host, or GCE e2-micro
   and stick with it. Running two worker instances against one WhatsApp
   account will fight over the session (`connectionReplaced` 440 loop) and
   eventually rate-limit the number.
 - Anything about the SSH key `user@DESKTOP-O7H0FRT`. MatzHub has no server
-  you SSH into. SSH keys belong on GitHub (for `git push`) and on Fly.io /
+  you SSH into. SSH keys belong on GitHub (for `git push`) and on worker host /
   GCE (for `fly ssh console` or `gcloud compute ssh`), not in this repo.
