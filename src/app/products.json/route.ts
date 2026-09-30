@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { PUBLISHED } from "@/lib/queries";
 import { db } from "@/db";
 import { categories, products } from "@/db/schema";
