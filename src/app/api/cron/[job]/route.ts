@@ -315,7 +315,98 @@ async function telegramSweepJob() {
   return { swept: await sweepExpiredMessages() };
 }
 
+/**
+ * Existing-product background cleanup backfill. Re-runs the SAME deterministic
+ * worker media engine (worker/media-engine.mjs → cleanBackground) over images
+ * already in the catalogue, so products ingested before background cleanup
+ * existed get the identical treatment as new ingests. Product pixels are
+ * byte-preserved by the engine; images it cannot clean safely stay unchanged.
+ *
+ * Idempotent and resumable: walks products by id using a cursor in `settings`
+ * (no schema change), a few products per run to stay within the 60 s budget.
+ * Only `images` / `heroImage` are rewritten — status, price, expiry, ordering
+ * (`updatedAt`) and imageHash (source-media dedupe) are left untouched.
+ * Zero AI calls.
+ */
+const MEDIA_CLEANUP_CURSOR = "media_bg_cleanup_cursor";
+const MEDIA_CLEANUP_BATCH = 4;
+
+type MediaEngine = {
+  cleanBackground: (buf: Buffer) => Promise<{ applied: boolean; buffer: Buffer; reason: string | null }>;
+  optimiseImage: (buf: Buffer, opts?: { removeBackground?: boolean }) => Promise<Buffer | null>;
+};
+
+async function mediaCleanupJob(): Promise<Record<string, number>> {
+  const supabaseUrl = (process.env.SUPABASE_URL || process.env.NEXT_PUBLIC_SUPABASE_URL || "").replace(/\/$/, "");
+  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const bucket = process.env.SUPABASE_BUCKET || "products";
+  if (!supabaseUrl || !supabaseKey) return { skippedNoStorage: 1 };
+
+  // @ts-expect-error -- plain ESM worker module (allowJs is off); typed via MediaEngine
+  const engine: MediaEngine = (await import("../../../../../worker/media-engine.mjs")).default;
+  const [cursorRow] = await db.select().from(settings).where(eq(settings.key, MEDIA_CLEANUP_CURSOR)).limit(1);
+  const cursor = cursorRow?.value ?? "";
+  if (cursor === "done") return { complete: 1 };
+
+  const batch = await db
+    .select({ id: products.id, images: products.images, heroImage: products.heroImage })
+    .from(products)
+    .where(cursor ? sql`${products.id}::text > ${cursor}` : sql`true`)
+    .orderBy(sql`${products.id}::text`)
+    .limit(MEDIA_CLEANUP_BATCH);
+
+  let scanned = 0;
+  let cleaned = 0;
+  let unchanged = 0;
+  let failed = 0;
+  let productsUpdated = 0;
+  const ownPrefix = `${supabaseUrl}/storage/v1/object/public/${bucket}/`;
+
+  for (const row of batch) {
+    const replaced = new Map<string, string>();
+    for (const url of row.images ?? []) {
+      if (!url || !url.startsWith(ownPrefix) || url.includes("/bgc-") || replaced.has(url)) continue;
+      scanned += 1;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
+        if (!res.ok) { failed += 1; continue; }
+        const source = Buffer.from(await res.arrayBuffer());
+        const result = await engine.cleanBackground(source);
+        if (!result.applied) { unchanged += 1; continue; }
+        const webp = await engine.optimiseImage(result.buffer, { removeBackground: false });
+        if (!webp) { failed += 1; continue; }
+        const name = `products/bgc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.webp`;
+        const up = await fetch(`${supabaseUrl}/storage/v1/object/${bucket}/${name}`, {
+          method: "POST",
+          headers: { apikey: supabaseKey, Authorization: `Bearer ${supabaseKey}`, "Content-Type": "image/webp", "x-upsert": "true" },
+          body: new Uint8Array(webp),
+        });
+        if (!up.ok) { failed += 1; continue; }
+        replaced.set(url, `${ownPrefix}${name}`);
+        cleaned += 1;
+      } catch {
+        failed += 1;
+      }
+    }
+    if (replaced.size > 0) {
+      const images = (row.images ?? []).map((u) => replaced.get(u) ?? u);
+      const heroImage = replaced.get(row.heroImage) ?? row.heroImage;
+      await db.update(products).set({ images, heroImage }).where(eq(products.id, row.id));
+      productsUpdated += 1;
+    }
+  }
+
+  const next = batch.length < MEDIA_CLEANUP_BATCH ? "done" : String(batch[batch.length - 1].id);
+  await db
+    .insert(settings)
+    .values({ key: MEDIA_CLEANUP_CURSOR, value: next })
+    .onConflictDoUpdate({ target: settings.key, set: { value: next, updatedAt: new Date() } });
+
+  return { products: batch.length, scanned, cleaned, unchanged, failed, productsUpdated, complete: next === "done" ? 1 : 0 };
+}
+
 const JOBS: Record<string, () => Promise<Record<string, number>>> = {
+  "media-cleanup": mediaCleanupJob,
   subscription: subscriptionJob,
   "telegram-sweep": telegramSweepJob,
   "storage-sweep": storageSweepJob,

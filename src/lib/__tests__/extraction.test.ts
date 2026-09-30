@@ -375,6 +375,89 @@ describe("media processing & visual verification (image + video frame safety)", 
     expect(allBad).toEqual([]);
   });
 
+  it("true background cleanup repaints only exterior backdrop and keeps every product pixel byte-identical", async () => {
+    const sharp = (await import("sharp")).default;
+    // @ts-expect-error -- ESM worker module imported directly in node test
+    const mediaEngine = (await import("../../../worker/media-engine.mjs")).default;
+
+    const W = 480;
+    const H = 400;
+    type Kind = "studio" | "clutter" | "white" | "greyleak";
+    const scene = (kind: Kind) => {
+      const d = Buffer.alloc(W * H * 3);
+      const prod = new Uint8Array(W * H);
+      for (let y = 0; y < H; y += 1) {
+        for (let x = 0; x < W; x += 1) {
+          const i = (y * W + x) * 3;
+          const base = kind === "white" ? 248 : kind === "greyleak" ? 150 : 200 + Math.round((30 * y) / H);
+          let r = base;
+          let g = base;
+          let b = base;
+          if (kind === "clutter") {
+            if (y > H * 0.7) { r = 120 + ((x * 7) % 40); g = 80; b = 50; } // table
+            if (x < 60) { r = 200; g = 150; b = 120; } // wall/hand at frame edge
+          }
+          const dx = x - 240;
+          const dy = y - 200;
+          const sr = Math.hypot(dx - 14, dy - 16);
+          if (sr < 150) { const k = Math.round(30 * (1 - sr / 150)); r -= k; g -= k; b -= k; } // soft drop shadow
+          if (Math.abs(dx) < 100 && Math.abs(dy) < 90) {
+            prod[y * W + x] = 1;
+            r = (((x * 13) ^ (y * 7)) % 160) + 40; // textured product with logo-like pattern
+            g = ((x * 5) % 120) + 30;
+            b = ((y * 11) % 200) + 20;
+            if (dx > 40 && dy < -40) { const v = kind === "white" ? 250 : kind === "greyleak" ? 150 : 245; r = v; g = v; b = v; } // label
+          }
+          d[i] = r; d[i + 1] = g; d[i + 2] = b;
+        }
+      }
+      return { d, prod };
+    };
+    const toPng = (d: Buffer) => sharp(d, { raw: { width: W, height: H, channels: 3 } }).png().toBuffer();
+
+    // 1. Studio/gradient backdrop with shadow → backdrop removed, product untouched.
+    const studio = scene("studio");
+    const res = await mediaEngine.cleanBackground(await toPng(studio.d));
+    expect(res.applied).toBe(true);
+    const { data } = await sharp(res.buffer).raw().toBuffer({ resolveWithObject: true });
+    let changed = 0;
+    let bgTotal = 0;
+    let bgWhite = 0;
+    for (let i = 0; i < W * H; i += 1) {
+      const a = i * 3;
+      if (studio.prod[i]) {
+        if (data[a] !== studio.d[a] || data[a + 1] !== studio.d[a + 1] || data[a + 2] !== studio.d[a + 2]) changed += 1;
+      } else {
+        bgTotal += 1;
+        if (data[a] === 255 && data[a + 1] === 255 && data[a + 2] === 255) bgWhite += 1;
+      }
+    }
+    expect(changed).toBe(0); // geometry, colour, texture, label: byte-identical
+    expect(bgWhite / bgTotal).toBeGreaterThan(0.85); // real removal, not a border crop
+    const meta = await sharp(res.buffer).metadata();
+    expect([meta.width, meta.height]).toEqual([W, H]); // no crop / resample in the cleanup step
+
+    // 2. Unsafe scenes are left exactly as supplied.
+    const clutter = await toPng(scene("clutter").d);
+    const c = await mediaEngine.cleanBackground(clutter);
+    expect(c.applied).toBe(false);
+    expect(c.reason).toBe("cluttered_background");
+    expect(c.buffer).toBe(clutter);
+    expect((await mediaEngine.cleanBackground(await toPng(scene("white").d))).reason).toBe("light_backdrop_already_clean");
+    expect((await mediaEngine.cleanBackground(await toPng(scene("greyleak").d))).reason).toBe("product_resembles_backdrop");
+    expect((await mediaEngine.cleanBackground(Buffer.from("not an image"))).applied).toBe(false);
+
+    // 3. The standard pipeline (images + video frames share optimiseImage) applies it.
+    const cornerMean = async (img: Buffer) => {
+      const px = await sharp(img).extract({ left: 0, top: 0, width: 8, height: 8 }).removeAlpha().raw().toBuffer();
+      return px.reduce((sum: number, v: number) => sum + v, 0) / px.length;
+    };
+    const webp = await mediaEngine.optimiseImage(await toPng(studio.d));
+    expect(await cornerMean(webp)).toBeGreaterThan(250);
+    const plain = await mediaEngine.optimiseImage(await toPng(studio.d), { removeBackground: false });
+    expect(await cornerMean(plain)).toBeLessThan(230);
+  });
+
   it("uses Gemini Vision for frame selection and misleading-media rejection when configured", async () => {
     const { verifyProductMedia, clearEnrichmentCache } = await import("@/lib/ai");
     clearEnrichmentCache();

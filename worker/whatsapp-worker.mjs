@@ -1033,6 +1033,8 @@ function startCronScheduler() {
     { name: "notify", intervalMs: 5 * 60 * 1000 },
     { name: "supplier", intervalMs: 24 * 60 * 60 * 1000 },
     { name: "subscription", intervalMs: 24 * 60 * 60 * 1000 },
+    // Existing-product background cleanup backfill; no-ops once complete.
+    { name: "media-cleanup", intervalMs: 10 * 60 * 1000 },
   ];
 
   const trigger = async (job) => {
