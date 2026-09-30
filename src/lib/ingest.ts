@@ -576,27 +576,16 @@ export async function runTrendingJob() {
 }
 
 export async function runExpiryJob() {
+  // Expiry is the only lifecycle transition: an expired product leaves the
+  // public catalogue and orderable flow (archived tombstone). Stock counts
+  // never change availability — there is no low_stock/out_of_stock state.
   const expired = await db
     .update(products)
     .set({ status: "archived", availability: "discontinued", updatedAt: new Date() })
     .where(and(eq(products.status, "published"), sql`${products.expiresAt} < now()`))
     .returning({ id: products.id });
 
-  const low = await db
-    .update(products)
-    .set({ availability: "low_stock" })
-    .where(and(eq(products.status, "published"), sql`${products.stockQty} between 1 and 4`))
-    .returning({ id: products.id });
-
-  // Only mark out_of_stock if customer orders actually depleted the inventory to 0,
-  // not active supplier items with unmetered stock.
-  const out = await db
-    .update(products)
-    .set({ availability: "out_of_stock" })
-    .where(and(eq(products.status, "published"), eq(products.stockQty, 0), sql`${products.orders} > 0`))
-    .returning({ id: products.id });
-
-  return { archived: expired.length, lowStock: low.length, outOfStock: out.length };
+  return { archived: expired.length };
 }
 
 export async function runSupplierScoreJob() {

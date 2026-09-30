@@ -145,11 +145,13 @@ export function updateCartQty(id: string, variant: string | undefined, qty: numb
 /**
  * Reconciles the locally-stored cart against the live catalogue.
  *
- * localStorage can hold a line for weeks. Prices move, products get delisted
- * and stock runs out, so the cart must never quote a stale number or hand the
- * customer an order for something that cannot be sold. Lines whose product no
- * longer resolves are dropped; surviving lines take the current price/title/
- * image. Returns what changed so the UI can say so plainly.
+ * localStorage can hold a line for weeks. Prices move and products expire, so
+ * the cart must never quote a stale number or hand the customer an order for
+ * something that cannot be sold. The by-ids feed answers with the same
+ * published+unexpired rule the catalogue uses, so any line whose product no
+ * longer resolves is dropped; surviving lines take the current price/title/
+ * image. Stock state never ejects a line. Returns what changed so the UI can
+ * say so plainly.
  *
  * Network failure is non-fatal — the cart keeps working offline.
  */
@@ -181,10 +183,6 @@ export async function revalidateCart(): Promise<{ removed: string[]; repriced: s
     const p = by.get(line.id);
     if (!p) {
       removed.push(line.title);
-      continue;
-    }
-    if (p.availability === "out_of_stock") {
-      soldOut.push(p.title);
       continue;
     }
     if (p.price !== line.price) repriced.push(p.title);

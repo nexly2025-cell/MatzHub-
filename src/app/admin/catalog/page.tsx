@@ -24,8 +24,9 @@ async function patchProduct(formData: FormData) {
   if (action === "hide") await db.update(products).set({ status: "archived", updatedAt: new Date() }).where(eq(products.id, id));
   if (action === "show") await db.update(products).set({ status: "published", publishedAt: new Date() }).where(eq(products.id, id));
   if (action === "stock") {
+    // Informational record only — availability is governed by status + expiry.
     const stock = Math.max(0, Number(formData.get("stockQty")));
-    await db.update(products).set({ stockQty: stock, availability: stock === 0 ? "out_of_stock" : stock < 5 ? "low_stock" : "in_stock", updatedAt: new Date() }).where(eq(products.id, id));
+    await db.update(products).set({ stockQty: stock, updatedAt: new Date() }).where(eq(products.id, id));
   }
   revalidatePath("/admin/catalog");
 }

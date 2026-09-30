@@ -1,7 +1,7 @@
 import "server-only";
 
 import crypto from "node:crypto";
-import { and, eq, gte, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { carts, notifications, orderItems, orders, productVariants, products } from "@/db/schema";
 import { log } from "@/lib/tracing";
@@ -133,9 +133,10 @@ export type CreatedOrder = {
 /**
  * Creates one customer order request from live product data.
  *
- * Prices and availability never come from browser storage. The transaction
- * conditionally decrements each product/variant row, so two requests cannot
- * oversell the final item. `submissionKey` gives retries exactly-once behavior.
+ * Prices and availability never come from browser storage. Availability is the
+ * same authoritative lifecycle rule the catalogue uses — a product is orderable
+ * exactly while it is published and unexpired; orders never alter that state.
+ * `submissionKey` gives retries exactly-once behavior.
  */
 export async function createCustomerOrder(raw: CreateOrderInput): Promise<CreatedOrder> {
   if (!UUID.test(raw.anonId) || !UUID.test(raw.submissionKey)) {
@@ -181,8 +182,6 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
           heroImage: products.heroImage,
           price: products.price,
           costPrice: products.costPrice,
-          stockQty: products.stockQty,
-          availability: products.availability,
           status: products.status,
           expiresAt: products.expiresAt,
           manufacturerId: products.manufacturerId,
@@ -202,21 +201,17 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
       }
 
       const resolved = lines.map((line) => {
-        const product = byId.get(line.productId)! as typeof line.product & { expiresAt?: Date | null };
-        if (product.status !== "published" || product.availability === "discontinued" || (product as unknown as { availability: string }).availability === "out_of_stock") {
-          throw new OrderRequestError(`${product.title} is no longer available.`, 409, "unavailable_product");
-        }
-        if ((product as unknown as { expiresAt?: Date | null }).expiresAt && new Date((product as unknown as { expiresAt: Date }).expiresAt).getTime() < Date.now()) {
+        const product = byId.get(line.productId)!;
+        // One availability rule everywhere: published AND expiresAt exists AND
+        // expiresAt is in the future. Stock counts and the legacy availability
+        // column never decide whether an order is accepted.
+        if (product.status !== "published" || !product.expiresAt || product.expiresAt.getTime() <= Date.now()) {
           throw new OrderRequestError(`${product.title} is no longer available.`, 409, "unavailable_product");
         }
         const variantsForProduct = variantsByProduct.get(product.id) ?? [];
         const variant = line.variant ? variantsForProduct.find((candidate) => candidate.label === line.variant) : undefined;
         if (variantsForProduct.length && !variant) {
           throw new OrderRequestError(`Choose an available variant for ${product.title}.`, 409, "variant_required");
-        }
-        // Metered (stockQty > 0) enforce quantity; unmetered (0) remain selectable without sold-out language.
-        if (variant && variant.stockQty > 0 && variant.stockQty < line.qty) {
-          throw new OrderRequestError(`${variant.label} is no longer available in that quantity.`, 409, "variant_unavailable");
         }
         return { ...line, product, variant };
       });
@@ -256,41 +251,16 @@ export async function createCustomerOrder(raw: CreateOrderInput): Promise<Create
         .returning({ id: orders.id });
 
       for (const line of resolved) {
-        if (line.variant && line.variant.stockQty > 0) {
-          const [variantUpdated] = await tx
-            .update(productVariants)
-            .set({ stockQty: sql`greatest(0, ${productVariants.stockQty} - ${line.qty})` })
-            .where(and(eq(productVariants.id, line.variant.id), gte(productVariants.stockQty, line.qty)))
-            .returning({ id: productVariants.id });
-          if (!variantUpdated) throw new OrderRequestError(`${line.variant.label} is no longer available in that quantity.`, 409, "variant_unavailable");
-        }
-
-        if (line.product.stockQty > 0) {
-          const [productUpdated] = await tx
-            .update(products)
-            .set({
-              stockQty: sql`greatest(0, ${products.stockQty} - ${line.qty})`,
-              orders: sql`${products.orders} + ${line.qty}`,
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(products.id, line.product.id),
-                eq(products.status, "published"),
-                ne(products.availability, "discontinued"),
-                gte(products.stockQty, line.qty),
-                sql`${products.expiresAt} > now()`,
-              ),
-            )
-            .returning({ id: products.id });
-          if (!productUpdated) throw new OrderRequestError(`${line.product.title} is no longer available.`, 409, "unavailable_product");
-        } else {
-          // Unmetered: record demand without decrementing or claiming sold out.
-          await tx
-            .update(products)
-            .set({ orders: sql`${products.orders} + ${line.qty}`, updatedAt: new Date() })
-            .where(and(eq(products.id, line.product.id), eq(products.status, "published")));
-        }
+        // Record demand without touching stock: an order must never flip a
+        // product to out_of_stock/low_stock, and no stock count may block it.
+        // The authoritative rule is re-checked inside the transaction so a
+        // product that expired between validation and commit cannot be sold.
+        const [productUpdated] = await tx
+          .update(products)
+          .set({ orders: sql`${products.orders} + ${line.qty}`, updatedAt: new Date() })
+          .where(and(eq(products.id, line.product.id), eq(products.status, "published"), sql`${products.expiresAt} > now()`))
+          .returning({ id: products.id });
+        if (!productUpdated) throw new OrderRequestError(`${line.product.title} is no longer available.`, 409, "unavailable_product");
 
         await tx.insert(orderItems).values({
           orderId: created.id,

@@ -18,7 +18,7 @@ export async function GET() {
   try {
     await db.execute(sql`select 1`);
     const [{ products: count }] = await db.execute<{ products: number }>(
-      sql`select count(*)::int as products from products where status = 'published' and expires_at > now() and availability <> 'discontinued'`,
+      sql`select count(*)::int as products from products where status = 'published' and expires_at > now()`,
     ).then((r) => r.rows as Array<{ products: number }>).then((rows) => [rows[0] ?? { products: 0 }]);
 
     return NextResponse.json({

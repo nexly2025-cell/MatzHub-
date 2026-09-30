@@ -198,9 +198,9 @@ async function stockSyncJob() {
 
     const updates: Record<string, unknown> = { updatedAt: new Date() };
     if (stockMatch) {
-      const n = Math.max(0, Number(stockMatch[1]));
-      updates.stockQty = n;
-      updates.availability = n === 0 ? "out_of_stock" : n < 5 ? "low_stock" : "in_stock";
+      // Supplier stock figures are recorded for reference only. Availability
+      // is governed by status + expiry, never by a stock count.
+      updates.stockQty = Math.max(0, Number(stockMatch[1]));
       synced += 1;
     }
     if (costMatch) {

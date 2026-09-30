@@ -47,9 +47,10 @@ export default async function ProductPage({ params }: Props) {
   const category = cat[0];
   const off = savePercent(p.mrp, p.price);
   const url = `${SITE.url}/p/${p.slug}`;
-  const availabilityLd =
-    p.availability === "out_of_stock" ? "https://schema.org/OutOfStock" :
-    p.availability === "low_stock" ? "https://schema.org/LimitedAvailability" : "https://schema.org/InStock";
+  // This page only renders through the PUBLISHED gate, so the offer is always
+  // purchasable here; availability is expiry-only and legacy stock states must
+  // not leak into structured data.
+  const availabilityLd = "https://schema.org/InStock";
 
   const ld = {
     "@context": "https://schema.org",

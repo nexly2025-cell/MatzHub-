@@ -1,7 +1,7 @@
-import { desc, eq, sql } from "drizzle-orm";
+import { desc, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { products } from "@/db/schema";
-import { getCategories } from "@/lib/queries";
+import { getCategories, PUBLISHED } from "@/lib/queries";
 import { SITE } from "@/lib/utils";
 
 export const revalidate = 3600;
@@ -11,13 +11,13 @@ export async function GET() {
   const [cats, top, [stats]] = await Promise.all([
     getCategories(),
     db.select({ slug: products.slug, title: products.title, price: products.price, shortAnswer: products.shortAnswer })
-      .from(products).where(eq(products.status, "published")).orderBy(desc(products.trendingScore)).limit(40),
+      .from(products).where(PUBLISHED).orderBy(desc(products.trendingScore)).limit(40),
     db.select({
       total: sql<number>`count(*)::int`,
       avgSave: sql<number>`coalesce(avg((mrp - price)::float / nullif(mrp,0)) * 100,0)::int`,
       min: sql<number>`coalesce(min(price),0)::int`,
       max: sql<number>`coalesce(max(price),0)::int`,
-    }).from(products).where(eq(products.status, "published")),
+    }).from(products).where(PUBLISHED),
   ]);
 
   const body = `# MatzHub

@@ -1,7 +1,8 @@
 import { NextResponse } from "next/server";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray } from "drizzle-orm";
 import { db } from "@/db";
 import { cartItems, carts, products } from "@/db/schema";
+import { PUBLISHED } from "@/lib/queries";
 import { clientKey, rateLimit } from "@/lib/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -51,7 +52,7 @@ export async function POST(request: Request) {
     const rows = await db
       .select({ id: products.id, price: products.price })
       .from(products)
-      .where(and(inArray(products.id, ids), eq(products.status, "published"), ne(products.availability, "out_of_stock")));
+      .where(and(inArray(products.id, ids), PUBLISHED));
     const priceById = new Map(rows.map((row) => [row.id, row.price]));
     const validItems = items.filter((item) => priceById.has(item.productId));
 

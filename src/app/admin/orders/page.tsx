@@ -92,13 +92,11 @@ async function createOrder(formData: FormData) {
     lineTotal: subtotal,
   });
 
-  // Stock follows the sale so the storefront stops offering what is gone.
+  // Record demand only. Availability is expiry-only: a sale never drains stock
+  // into a sold-out state, so no stock bookkeeping belongs here.
   await db
     .update(products)
-    .set({
-      stockQty: sql`greatest(0, ${products.stockQty} - ${qty})`,
-      orders: sql`${products.orders} + ${qty}`,
-    })
+    .set({ orders: sql`${products.orders} + ${qty}` })
     .where(eq(products.id, p.id));
 
   revalidatePath("/admin/orders");

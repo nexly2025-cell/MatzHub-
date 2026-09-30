@@ -4,7 +4,12 @@ import { categories, manufacturers, opsTasks, orders, products, reviews } from "
 import { searchMatchSql, searchRankSql } from "@/lib/search";
 import { toPublicMediaUrl } from "@/lib/storage";
 
-export const PUBLISHED = and(eq(products.status, "published"), sql`${products.expiresAt} > now()`, ne(products.availability, "discontinued"));
+// The single availability rule for every public and orderable surface:
+// published and inside its valid expiry window. SQL NULL semantics already
+// exclude expires_at IS NULL, so "expiresAt exists AND expiresAt > now" holds.
+// Expiry archival (runExpiryJob) tombstones rows to archived + discontinued,
+// so no availability-state clause belongs here.
+export const PUBLISHED = and(eq(products.status, "published"), sql`${products.expiresAt} > now()`);
 
 export const productCard = {
   id: products.id,

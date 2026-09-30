@@ -54,14 +54,11 @@ export default function BuyBox({
   };
 
   const off = savePercent(p.mrp, p.price);
-  // Availability model: available if active and not expired. Catalogue-wide 21-day expiry is the model;
-  // discontinued (or legacy out_of_stock) is the only unavailable state. Unmetered (stockQty 0) is orderable.
-  const isAvailable = p.availability !== "discontinued" && p.availability !== "out_of_stock";
-  const soldOut = !isAvailable;
-  const selectedVariant = variants.find((v) => v.label === variant);
-  // Metered variants (stockQty > 0) with insufficient stock are disabled; unmetered (0) remain selectable.
-  const isVariantInsufficient = (v: { stockQty: number } | undefined) => Boolean(v && v.stockQty > 0 && v.stockQty < qty);
-  const unavailable = soldOut || isVariantInsufficient(selectedVariant);
+  // Availability model: this page renders only products that passed the
+  // PUBLISHED gate (published + unexpired), so every product here is orderable.
+  // Stock counts and the legacy availability column never hide or block commerce.
+  const isAvailable = true;
+  const soldOut = false;
 
   // One order format for the whole site. The cart builds the same message from
   // the same helper, so a single-item "Buy on WhatsApp" and a cart checkout
@@ -125,7 +122,6 @@ export default function BuyBox({
                   key={v.id}
                   type="button"
                   onClick={() => setVariant(v.label)}
-                  disabled={v.stockQty > 0 && v.stockQty < qty}
                   data-on={variant === v.label}
                   className="chip min-w-[44px] justify-center disabled:opacity-30 disabled:line-through"
                   aria-pressed={variant === v.label}
@@ -161,7 +157,6 @@ export default function BuyBox({
         <button
           type="button"
           onClick={handleAddToCart}
-          disabled={unavailable}
           className="btn btn-solid mt-2.5 w-full bg-ink text-oninverse hover:opacity-90"
         >
           {addedSuccess ? "✓ Added to Cart" : "Add to Cart"}
@@ -235,7 +230,6 @@ ${url}`).catch(() => undefined);
           <button
             type="button"
             onClick={handleAddToCart}
-            disabled={unavailable}
             className="btn btn-solid h-12 flex-1 text-[14px] bg-ink text-oninverse hover:opacity-90"
           >
             {addedSuccess ? "✓ Added" : "Add to Cart"}
