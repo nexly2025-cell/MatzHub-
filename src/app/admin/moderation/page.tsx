@@ -5,6 +5,7 @@ import { db } from "@/db";
 import { auditLog, opsTasks, products } from "@/db/schema";
 import { getPendingProducts } from "@/lib/queries";
 import { retireProductAlert } from "@/lib/notify";
+import { toPublicMediaUrl } from "@/lib/storage";
 import { inr } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -48,7 +49,7 @@ export default async function Moderation() {
           {items.map((p) => (
             <article key={p.id} className="surface flex gap-4 p-4">
               <div className="relative h-28 w-28 shrink-0 overflow-hidden rounded-lg bg-surface-3">
-                {p.heroImage ? <Image src={p.heroImage} alt="" fill sizes="112px" className="object-cover" /> : <div className="grid h-full place-items-center text-[10px] text-[--color-rose]">no image</div>}
+                {p.heroImage ? <Image src={toPublicMediaUrl(p.heroImage) || p.heroImage} alt="" fill sizes="112px" className="object-cover" /> : <div className="grid h-full place-items-center text-[10px] text-[--color-rose]">no image</div>}
               </div>
               <div className="min-w-0 flex-1">
                 <h2 className="line-clamp-2 text-sm font-medium">{p.title}</h2>
@@ -59,6 +60,7 @@ export default async function Moderation() {
                   <span className={`chip text-[10px] ${p.qualityScore < 50 ? "!text-[--color-rose] !border-[--color-rose]" : ""}`}>quality {p.qualityScore.toFixed(0)}</span>
                   <span className="chip text-[10px]">confidence {(p.confidence * 100).toFixed(0)}%</span>
                   {!p.heroImage && <span className="chip text-[10px] !text-[--color-rose]">no image</span>}
+                  {p.moderationReason && <span className="chip text-[10px] !text-[--color-rose] !border-[--color-rose]">{p.moderationReason}</span>}
                 </div>
                 <div className="mt-3 flex gap-2">
                   <form action={decide}>

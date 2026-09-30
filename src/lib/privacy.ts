@@ -146,15 +146,19 @@ export function publicProduct(p: ProductLike): PublicProduct {
   };
 }
 
-const SPEC_BLOCKLIST = /supplier|manufacturer name|factory|vendor|source group|whatsapp|contact|phone|cost/i;
+const SPEC_BLOCKLIST = /supplier|manufacturer name|factory|vendor|source group|whatsapp|contact|phone|cost|price|mrp|margin|reseller|message.?id|image.?hash|content.?hash/i;
 
 /** Belt and braces: an AI-generated spec table must not smuggle supplier data. */
 export function sanitizeSpecs(specs: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(specs)) {
+    if (!k || v === null || v === undefined) continue;
+    const strVal = String(v).trim();
+    if (!strVal) continue;
     if (SPEC_BLOCKLIST.test(k)) continue;
-    if (/\+?\d[\d\s-]{8,}/.test(v)) continue; // any phone-number-shaped value
-    out[k] = v;
+    if (/\+?\d[\d\s-]{8,}/.test(strVal)) continue; // any phone-number-shaped value
+    if (/^(unknown|n\/a|na|none|null|undefined|-)$/i.test(strVal)) continue;
+    out[k] = strVal;
   }
   return out;
 }
@@ -162,8 +166,8 @@ export function sanitizeSpecs(specs: Record<string, string>): Record<string, str
 /**
  * Commercial terms that must never survive from a supplier caption into public
  * copy. Suppliers write things like "Cost 2400 Stock 5", "Rate 1850/-",
- * "wholesale 900 net", "moq 10 pcs" — all of which disclose either our buying
- * price or internal inventory.
+ * "wholesale 900 net", "moq 10 pcs", "900 only" — all of which disclose either
+ * our buying price or internal inventory.
  *
  * Matched per line. A line is dropped entirely rather than partially redacted,
  * because a half-scrubbed price line reads like broken copy on the storefront.
@@ -172,10 +176,12 @@ const SUPPLIER_COMMERCIAL_LINE = new RegExp(
   [
     // Explicit cost/price/rate labels followed by a number.
     String.raw`\b(cost|costing|price|rate|rs|inr|mrp|amount|net|deal|offer)\b\s*[:=\-]?\s*\d`,
-    // Bare Indian price shorthand: 2400/-, 2400 /-, 1850rs, ₹2400.
+    // Bare Indian price shorthand: 2400/-, 2400 /-, 1850rs, ₹2400, "900 only", "only 640".
     String.raw`\d\s*/\s*-`,
     String.raw`[₹$]\s*\d`,
-    String.raw`\b\d{3,6}\s*(rs|inr|rupees)\b`,
+    String.raw`\b\d{2,7}\s*(rs|inr|rupees)\b`,
+    String.raw`\b[0-9][0-9,]{1,7}\s*(?:\/-)?\s*only\b`,
+    String.raw`\bonly\s*(?:₹|rs\.?|inr)?\s*[0-9][0-9,]{1,7}\b`,
     // Inventory and trade terms.
     String.raw`\b(stock|qty|quantity|pcs|pieces|pairs|moq|min\.?\s*order|wholesale|dealer|distributor|margin|profit|per\s*piece|per\s*pc)\b`,
     // Channel solicitation that belongs to the supplier group, not our listing.

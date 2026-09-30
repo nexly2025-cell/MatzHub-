@@ -411,7 +411,7 @@ export function cleanTitleText(raw: string, categorySlug: string, brand: string 
   }
 
   if (GENERIC_NOUN_SET.has(cleaned.toLowerCase().trim())) {
-    cleaned = `${brand || "Premium"} ${catTitleNoun}`;
+    cleaned = brand ? `${brand} ${catTitleNoun}` : titleCase(categorySlug || catTitleNoun);
   }
 
   return titleCase(cleaned).slice(0, 80);
@@ -512,11 +512,15 @@ export function deterministicEnrich(input: EnrichmentInput): Enrichment {
   specs.Delivery = "Standard courier, pan-India";
   specs.Sourcing = "Verified partner, identity protected";
 
+  const specTags = Object.entries(specs)
+    .filter(([k]) => !["Category", "Gender", "Delivery", "Sourcing", "Brand", "Colour", "Material"].includes(k))
+    .map(([, v]) => v.toLowerCase().trim());
+
   const tags = Array.from(
     new Set(
-      [categorySlug, gender, color, material, brand, "premium", "curated"]
+      [categorySlug, gender, color, material, brand, ...specTags]
         .filter(Boolean)
-        .map((t) => String(t).toLowerCase()),
+        .map((t) => String(t).toLowerCase().trim()),
     ),
   ).slice(0, 10);
 
@@ -527,7 +531,7 @@ export function deterministicEnrich(input: EnrichmentInput): Enrichment {
   // sanitizeSupplierCaption strips those before any becomes public copy.
   const supplierLine = sanitizeSupplierCaption(caption);
   const description = [
-    supplierLine || `${title} — imported ${catLabel.toLowerCase()} from the verified supplies channel, listed exactly as provided by the source.`,
+    supplierLine || `${title} — ${catLabel.toLowerCase()} from the verified supplies channel, listed as provided by the source.`,
     `Ships across India with a 7-day replacement window if the item does not match the listing.`,
   ].join(" ");
 
@@ -683,39 +687,6 @@ function buildPrompt(input: EnrichmentInput, grounded: Enrichment): string {
 }
 
 /**
- * Grounding filter - the real enforcement layer.
- *
- * Prompt rules alone cannot be trusted to stop fabrication. Any spec the model
- * returns is dropped unless its value is traceable to the source caption
- * (case- and punctuation-insensitive containment). Computed rows are always
- * allowed because they are MatzHub policy, not product claims.
- */
-const COMPUTED_SPEC_KEYS = new Set(["Category", "Gender", "Delivery", "Sourcing", "Brand", "Colour", "Material"]);
-
-function groundSpecs(sourceCaption: string, specs: Record<string, string> | undefined): Record<string, string> {
-  if (!specs || typeof specs !== "object") return {};
-  const haystack = String(sourceCaption || "")
-    .toLowerCase()
-    .replace(/[^a-z0-9x. ]+/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
-
-  const out: Record<string, string> = {};
-  for (const [rawKey, rawValue] of Object.entries(specs)) {
-    const key = String(rawKey).slice(0, 40);
-    const value = String(rawValue ?? "").slice(0, 120);
-    if (!key || !value) continue;
-    if (COMPUTED_SPEC_KEYS.has(key)) {
-      out[key] = value;
-      continue;
-    }
-    const needle = value.toLowerCase().replace(/[^a-z0-9x. ]+/g, " ").replace(/\s+/g, " ").trim();
-    if (needle && haystack.includes(needle)) out[key] = value;
-  }
-  return out;
-}
-
-/**
  * Trade abbreviations a supplier actually writes, mapped to the wording a copy
  * editor would use, so a legitimate expansion counts as grounded: a caption
  * reading "Royal Oud EDP 100ml" may become "eau de parfum".
@@ -731,6 +702,9 @@ const ABBREVIATION_EXPANSIONS: Array<{ re: RegExp; expansion: string }> = [
   { re: /\bwr\s?(\d+)?\b/gi, expansion: "water resistant wr" },
   { re: /\bss\b/gi, expansion: "stainless steel ss" },
   { re: /\blth?r\b/gi, expansion: "leather lthr" },
+  { re: /\bchrono\b/gi, expansion: "chronograph chrono" },
+  { re: /\bauto\b/gi, expansion: "automatic auto" },
+  { re: /\bgen\s+leather\b/gi, expansion: "genuine leather" },
 ];
 
 function expandAbbreviations(text: string): string {
@@ -748,24 +722,32 @@ function expandAbbreviations(text: string): string {
  * model-authored text for that field.
  */
 const TECHNICAL_CLAIM_TERMS: Array<string> = [
-  "quartz", "automatic", "mechanical", "kinetic", "chronometer", "tourbillon", "skeleton",
-  "sapphire crystal", "mineral crystal", "hardlex", "gorilla glass", "scratch resistant",
-  "water resistant", "waterproof", "water resistance", "atm", "ip65", "ip66", "ip67", "ip68",
+  "quartz", "automatic", "mechanical", "kinetic", "chronometer", "tourbillon", "skeleton", "chronograph",
+  "sapphire crystal", "sapphire glass", "mineral crystal", "mineral glass", "hardlex", "gorilla glass", "scratch resistant", "scratch-resistant",
+  "water resistant", "water-resistant", "waterproof", "water resistance", "atm", "ip65", "ip66", "ip67", "ip68",
+  "shockproof", "shock resistant", "shock-resistant", "dustproof",
   "japanese", "swiss", "swiss made", "german made", "italian made", "made in japan", "made in italy", "made in switzerland",
-  "warranty", "guarantee", "guaranteed",
+  "warranty", "guarantee", "guaranteed", "lifetime", "1 year", "2 year", "certified", "hallmarked", "bis", "iso",
   "jewel", "jewels", "per day", "power reserve",
   "polarised", "polarized", "uv400", "uv 400", "anti reflective", "anti-reflective", "blue light",
-  "gsm", "thread count", "pre shrunk", "pre-shrunk", "shrink resistant",
+  "gsm", "thread count", "pre shrunk", "pre-shrunk", "shrink resistant", "breathable",
   "long lasting", "long-lasting", "projection", "sillage", "parfum intensity",
-  "full grain", "top grain", "genuine italian leather", "vegetable tanned",
+  "full grain", "top grain", "genuine italian leather", "genuine leather", "pure leather", "real leather", "vegan leather", "vegetable tanned",
+  "100% cotton", "pure cotton", "organic cotton", "sterling silver", "925 silver", "solid gold", "18k", "24k", "titanium", "carbon fiber", "ceramic", "cashmere",
+  "orthopedic", "memory foam", "anti-slip", "non-slip", "laptop compatible", "macbook", "bluetooth", "gps", "nfc", "amoled", "solar", "hypoallergenic", "handcrafted", "handmade",
 ];
 
 const claimTermPattern = (term: string) =>
-  new RegExp(`(?<![a-z])${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z])`, "i");
+  new RegExp(`(?<![a-z0-9])${term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`, "i");
 
 const COMPILED_CLAIM_PATTERNS = TECHNICAL_CLAIM_TERMS.map((t) => ({ term: t, re: claimTermPattern(t) }));
 
-/** Returns the technical terms used in `text` that are absent from `caption`. */
+const MEASUREMENT_RE = /\b(\d+(?:\.\d+)?)\s*(mm|cm|ml|gsm|atm|litre|liter|oz|inch|inches)\b|\b(\d+)\s*x\s*(\d+)(?:\s*x\s*(\d+))?\s*(?:cm|mm|in)?\b/gi;
+
+/**
+ * Returns any technical terms or explicit measurements used in `text` that are
+ * absent from `caption`.
+ */
 export function ungroundedClaims(caption: string, text: string): string[] {
   const source = expandAbbreviations(caption);
   const haystack = String(text || "");
@@ -773,57 +755,159 @@ export function ungroundedClaims(caption: string, text: string): string[] {
   for (const { term, re } of COMPILED_CLAIM_PATTERNS) {
     if (re.test(haystack) && !re.test(source)) found.push(term);
   }
-  return found;
+  const sourceNumbers = new Set((source.match(/\d+(?:\.\d+)?/g) ?? []).map((n) => n));
+  let m: RegExpExecArray | null;
+  const measureRegex = new RegExp(MEASUREMENT_RE.source, "gi");
+  while ((m = measureRegex.exec(haystack))) {
+    const nums = [m[1], m[3], m[4], m[5]].filter(Boolean);
+    if (nums.some((n) => !sourceNumbers.has(n))) {
+      found.push(m[0].trim().toLowerCase());
+    }
+  }
+  return Array.from(new Set(found));
 }
 
-/* ------------- LLM captioning (Groq fast, Gemini richer, both optional) -------------
- * Groq handles fast tasks; Gemini handles richer reasoning. Neither is mandatory.
+/**
+ * Grounding filter - the real enforcement layer.
+ *
+ * Prompt rules alone cannot be trusted to stop fabrication. Any spec the model
+ * returns is dropped unless its value is traceable to the source caption
+ * (case- and punctuation-insensitive containment) and contains no ungrounded
+ * technical claims. Policy rows (Category, Gender, Delivery, Sourcing) are
+ * never accepted from untrusted LLM output; they are attached deterministically.
+ */
+const POLICY_SPEC_KEYS = new Set(["category", "gender", "delivery", "sourcing"]);
+const FORBIDDEN_SPEC_KEY_RE = /supplier|manufacturer|factory|vendor|source|whatsapp|contact|phone|cost|price|mrp|margin|reseller|stock|qty|moq|warranty|guarantee|authenticity|origin/i;
+const PLACEHOLDER_SPEC_VALUE_RE = /^(unknown|n\/a|na|none|null|undefined|not specified|not mentioned|tbd|-+|\?+)$/i;
+
+export function groundSpecs(sourceCaption: string, specs: Record<string, string> | undefined): Record<string, string> {
+  if (!specs || typeof specs !== "object") return {};
+  const expandedCaption = expandAbbreviations(sourceCaption);
+  const haystack = expandedCaption
+    .replace(/[^a-z0-9x. ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  const out: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(specs)) {
+    const key = String(rawKey ?? "").trim().slice(0, 40);
+    const value = String(rawValue ?? "").trim().slice(0, 120);
+    if (!key || !value) continue;
+    if (POLICY_SPEC_KEYS.has(key.toLowerCase())) continue;
+    if (FORBIDDEN_SPEC_KEY_RE.test(key)) continue;
+    if (PLACEHOLDER_SPEC_VALUE_RE.test(value)) continue;
+    if (/\+?\d[\d\s-]{8,}/.test(value)) continue;
+    if (ungroundedClaims(sourceCaption, value).length > 0) continue;
+
+    const needle = expandAbbreviations(value)
+      .replace(/[^a-z0-9x. ]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (!needle) continue;
+    const tokens = needle.split(" ").filter((t) => t.length > 1 && !STOPWORDS.has(t));
+    const grounded =
+      haystack.includes(needle) ||
+      (tokens.length > 0 && tokens.every((tok) => new RegExp(`(?<![a-z0-9])${tok.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![a-z0-9])`).test(haystack)));
+    if (grounded) {
+      out[titleCase(key)] = value;
+    }
+  }
+  return out;
+}
+
+/* ------------- LLM captioning (GROQ text intelligence, Gemini visual + fallback) -------------
+ * GROQ handles fast, low-cost text/product intelligence; Gemini handles visual
+ * understanding/verification and optional fallback. Neither is mandatory.
  * Any failure returns null and the deterministic extractor has already produced
  * a complete, publishable record, so the product still ships (safe degradation).
  */
 
 const GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models";
-// Chosen by live measurement: gemini-2.0-flash and gemini-2.5-flash are retired
-// (404) and gemini-3.6-flash exceeded the ingestion budget. This returns
-// complete caption JSON in ~2-5s. Override with GEMINI_MODEL if needed.
 const GEMINI_DEFAULT_MODEL = "gemini-3.5-flash-lite";
-
-// Successful calls cluster under 5s but latency varies; 15s bounds ingestion
-// while letting the majority complete. Override with GEMINI_TIMEOUT_MS.
+const GROQ_DEFAULT_MODEL = "llama-3.1-8b-instant";
 const GEMINI_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS) || 15000;
+const GROQ_TIMEOUT_MS = Number(process.env.GROQ_TIMEOUT_MS) || 8000;
 
 /**
- * Issue 6 — 7-day in-memory cache + semaphore of 5 concurrent Gemini calls.
- * Free tier is 60 rpm; without this the ingest burst hits the ceiling.
+ * Issue 6 — 7-day in-memory cache + concurrency semaphores + rate-limit cooldowns.
+ * Protects free-tier GROQ and Gemini quotas from burst exhaustion and retry storms.
  */
 const GEMINI_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const GEMINI_CACHE_MAX = 400;
+const GEMINI_CACHE_MAX = 500;
 const GEMINI_CONCURRENCY = 5;
-const enrichmentCache = new Map<string, { value: Partial<Enrichment>; expires: number }>();
+const GROQ_CONCURRENCY = 5;
+const RATE_LIMIT_COOLDOWN_MS = 60 * 1000;
+
+type CachedEnrichment = { value: Partial<Enrichment>; modelUsed: string; expires: number };
+const enrichmentCache = new Map<string, CachedEnrichment>();
 let geminiInFlight = 0;
 const geminiWaiters: Array<() => void> = [];
+let groqInFlight = 0;
+const groqWaiters: Array<() => void> = [];
+let groqCooldownUntil = 0;
+let geminiCooldownUntil = 0;
 
-function enrichmentCacheKey(input: EnrichmentInput, grounded: Enrichment): string {
-  return `${grounded.categorySlug}::${(input.caption || "").trim()}::${input.imageUrl ? "img" : "noimg"}`;
+const quotaStats = {
+  cacheHits: 0,
+  skippedShortCaption: 0,
+  groqCalls: 0,
+  groqRateLimited: 0,
+  geminiTextCalls: 0,
+  geminiVisionCalls: 0,
+  geminiRateLimited: 0,
+  mediaCacheHits: 0,
+};
+
+export function getAiQuotaStats() {
+  return {
+    ...quotaStats,
+    enrichmentCacheSize: enrichmentCache.size,
+    mediaCacheSize: mediaVerificationCache.size,
+    groqCoolingDown: groqCooldownUntil > Date.now(),
+    geminiCoolingDown: geminiCooldownUntil > Date.now(),
+  };
 }
 
-function readEnrichmentCache(key: string): Partial<Enrichment> | undefined {
+export function clearEnrichmentCache(): void {
+  enrichmentCache.clear();
+  mediaVerificationCache.clear();
+  groqCooldownUntil = 0;
+  geminiCooldownUntil = 0;
+}
+
+function parseRetryAfterMs(res: { headers?: { get?: (name: string) => string | null } }): number {
+  const header = res.headers?.get?.("retry-after");
+  if (!header) return RATE_LIMIT_COOLDOWN_MS;
+  const secs = Number(header);
+  if (Number.isFinite(secs) && secs > 0) return Math.min(300_000, Math.max(5_000, secs * 1000));
+  return RATE_LIMIT_COOLDOWN_MS;
+}
+
+function enrichmentCacheKey(input: EnrichmentInput, grounded: Enrichment): string {
+  const normalizedCaption = (input.caption || "")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+  return `${grounded.categorySlug}::${normalizedCaption}::${grounded.costPrice}`;
+}
+
+function readEnrichmentCache(key: string): CachedEnrichment | undefined {
   const hit = enrichmentCache.get(key);
   if (!hit) return undefined;
   if (hit.expires < Date.now()) {
     enrichmentCache.delete(key);
     return undefined;
   }
-  console.info("[gemini] cache hit", key.slice(0, 80));
-  return hit.value;
+  quotaStats.cacheHits += 1;
+  return hit;
 }
 
-function rememberEnrichment(key: string, value: Partial<Enrichment>): void {
+function rememberEnrichment(key: string, value: Partial<Enrichment>, modelUsed: string): void {
   if (enrichmentCache.size >= GEMINI_CACHE_MAX) {
     const oldest = enrichmentCache.keys().next().value;
     if (oldest !== undefined) enrichmentCache.delete(oldest);
   }
-  enrichmentCache.set(key, { value, expires: Date.now() + GEMINI_CACHE_TTL_MS });
+  enrichmentCache.set(key, { value, modelUsed, expires: Date.now() + GEMINI_CACHE_TTL_MS });
 }
 
 async function withGeminiSlot<T>(fn: () => Promise<T>): Promise<T> {
@@ -839,40 +923,83 @@ async function withGeminiSlot<T>(fn: () => Promise<T>): Promise<T> {
   }
 }
 
+async function withGroqSlot<T>(fn: () => Promise<T>): Promise<T> {
+  while (groqInFlight >= GROQ_CONCURRENCY) {
+    await new Promise<void>((resolve) => groqWaiters.push(resolve));
+  }
+  groqInFlight += 1;
+  try {
+    return await fn();
+  } finally {
+    groqInFlight -= 1;
+    groqWaiters.shift()?.();
+  }
+}
+
+/**
+ * True only when the supplier caption contains enough non-commercial product
+ * wording to justify an LLM copywriting call. Empty or price-only captions
+ * ("900 only", "Rs 850/-") have no prose to rewrite and would only waste free
+ * quota or tempt the LLM to invent details.
+ */
+function hasEnoughTextForLlm(caption: string): boolean {
+  const tokens = normalizeTextForDedupe(caption)
+    .split(/\s+/)
+    .filter((w) => w.length >= 2 && !STOPWORDS.has(w));
+  return tokens.length >= 2;
+}
+
 async function llmEnrich(
   input: EnrichmentInput,
   grounded: Enrichment,
   timeoutMs = GEMINI_TIMEOUT_MS,
-): Promise<Partial<Enrichment> | null> {
+): Promise<{ data: Partial<Enrichment>; modelUsed: string } | null> {
+  if (!hasEnoughTextForLlm(input.caption)) {
+    quotaStats.skippedShortCaption += 1;
+    return null;
+  }
   const cacheKey = enrichmentCacheKey(input, grounded);
   const cached = readEnrichmentCache(cacheKey);
-  if (cached) return cached;
-  // Groq fast path first (cheap, low-latency). Gemini richer reasoning second. Both optional.
-  const groq = await callGroq(input, grounded, cacheKey);
-  if (groq) return groq;
+  if (cached) return { data: cached.value, modelUsed: cached.modelUsed };
+
+  // GROQ is the dedicated text/product intelligence engine. When GROQ_API_KEY
+  // is configured, never burn Gemini's visual quota on text copywriting.
+  if (process.env.GROQ_API_KEY) {
+    if (Date.now() < groqCooldownUntil) return null;
+    const groqModel = process.env.GROQ_MODEL || GROQ_DEFAULT_MODEL;
+    const groq = await withGroqSlot(() => callGroq(input, grounded, cacheKey, groqModel));
+    return groq ? { data: groq, modelUsed: `groq:${groqModel}` } : null;
+  }
+
+  // Gemini text fallback only when GROQ_API_KEY is not configured.
   const key = process.env.GEMINI_API_KEY;
-  if (!key) return null;
-  return withGeminiSlot(() => callGemini(key, input, grounded, cacheKey, timeoutMs));
+  if (!key || Date.now() < geminiCooldownUntil) return null;
+  const geminiModel = process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL;
+  const gemini = await withGeminiSlot(() => callGemini(key, input, grounded, cacheKey, timeoutMs, geminiModel));
+  if (gemini) return { data: gemini, modelUsed: `gemini:${geminiModel}` };
+  return null;
 }
 
 async function callGroq(
   input: EnrichmentInput,
   grounded: Enrichment,
   cacheKey: string,
+  model: string,
 ): Promise<Partial<Enrichment> | null> {
   const key = process.env.GROQ_API_KEY;
   if (!key) return null;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 8000);
+  const timer = setTimeout(() => controller.abort(), GROQ_TIMEOUT_MS);
   try {
+    quotaStats.groqCalls += 1;
     const res = await fetch("https://api.groq.com/openai/v1/chat/completions", {
       method: "POST",
       signal: controller.signal,
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
       body: JSON.stringify({
-        model: process.env.GROQ_MODEL || "llama-3.1-8b-instant",
-        temperature: 0.2,
-        max_tokens: 1024,
+        model,
+        temperature: 0.1,
+        max_tokens: 900,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: "You are MatzHub's fast product copy editor. Return ONLY valid minified JSON, no markdown." + ANTI_FABRICATION_RULES },
@@ -880,13 +1007,18 @@ async function callGroq(
         ],
       }),
     });
+    if (res.status === 429 || res.status === 503) {
+      quotaStats.groqRateLimited += 1;
+      groqCooldownUntil = Date.now() + parseRetryAfterMs(res);
+      return null;
+    }
     if (!res.ok) return null;
     const json = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
     const raw = json.choices?.[0]?.message?.content ?? "";
     if (!raw.trim()) return null;
     const parsed = JSON.parse(raw) as Partial<Enrichment>;
     parsed.specs = groundSpecs(input.caption, parsed.specs);
-    rememberEnrichment(cacheKey, parsed);
+    rememberEnrichment(cacheKey, parsed, `groq:${model}`);
     return parsed;
   } catch {
     return null;
@@ -901,23 +1033,24 @@ async function callGemini(
   grounded: Enrichment,
   cacheKey: string,
   timeoutMs: number,
+  model: string,
 ): Promise<Partial<Enrichment> | null> {
-  const model = process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    quotaStats.geminiTextCalls += 1;
     const res = await fetch(`${GEMINI_ENDPOINT}/${model}:generateContent`, {
       method: "POST",
       signal: controller.signal,
       headers: { "Content-Type": "application/json", "x-goog-api-key": key },
       body: JSON.stringify({
-        generationConfig: { temperature: 0.2, responseMimeType: "application/json", maxOutputTokens: 1024 },
+        generationConfig: { temperature: 0.1, responseMimeType: "application/json", maxOutputTokens: 900 },
         systemInstruction: {
           parts: [
             {
               text:
-                "You are MatzHub's product copy editor. You receive one raw WhatsApp message from a manufacturer and rewrite it into clean, restrained, premium e-commerce copy." +
+                "You are MatzHub's product copy editor. You receive one raw WhatsApp message from a manufacturer and rewrite it into clean, restrained, factual e-commerce copy." +
                 ANTI_FABRICATION_RULES +
                 "Your output is machine-parsed: return ONLY valid minified JSON, no markdown fence, no commentary.",
             },
@@ -927,6 +1060,11 @@ async function callGemini(
       }),
     });
 
+    if (res.status === 429 || res.status === 503) {
+      quotaStats.geminiRateLimited += 1;
+      geminiCooldownUntil = Date.now() + parseRetryAfterMs(res);
+      return null;
+    }
     if (!res.ok) return null;
 
     const json = (await res.json()) as {
@@ -938,8 +1076,7 @@ async function callGemini(
 
     const parsed = JSON.parse(cleaned) as Partial<Enrichment>;
     parsed.specs = groundSpecs(input.caption, parsed.specs);
-    rememberEnrichment(cacheKey, parsed);
-    console.info("[gemini] cache store", cacheKey.slice(0, 80));
+    rememberEnrichment(cacheKey, parsed, `gemini:${model}`);
     return parsed;
   } catch {
     return null;
@@ -959,50 +1096,168 @@ const VALID_CATS = new Set(CATEGORY_RULES.map((r) => r.slug));
  * the single most damaging fabrication, because it turns a generic piece into a
  * branded one.
  */
-function traceableToSource(value: string | null | undefined, caption: string): boolean {
+export function traceableToSource(value: string | null | undefined, caption: string): boolean {
   if (value === null || value === undefined || String(value).trim() === "") return true;
-  const haystack = String(caption || "").toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
-  const needle = String(value).toLowerCase().replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const haystack = expandAbbreviations(caption).replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
+  const needle = expandAbbreviations(String(value)).replace(/[^a-z0-9 ]+/g, " ").replace(/\s+/g, " ").trim();
   if (!needle) return true;
-  return haystack.includes(needle);
+  const esc = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![a-z0-9])${esc(needle)}(?![a-z0-9])`).test(haystack);
 }
 
-/** Main entrypoint: LLM-first with guaranteed deterministic fallback + validation. */
+/**
+ * Ensures an LLM-generated title does not introduce ungrounded brands, colors,
+ * materials, or technical claims that were absent from the source caption.
+ */
+function hasUngroundedEntityInText(caption: string, text: string): boolean {
+  if (ungroundedClaims(caption, text).length > 0) return true;
+  const lowerText = ` ${text.toLowerCase()} `;
+  for (const b of BRAND_HINTS) {
+    const esc = b.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?<![a-z0-9])${esc}(?![a-z0-9])`).test(lowerText) && !traceableToSource(b, caption)) {
+      return true;
+    }
+  }
+  for (const m of MATERIALS) {
+    const esc = m.toLowerCase().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?<![a-z0-9])${esc}(?![a-z0-9])`).test(lowerText) && !traceableToSource(m, caption)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function groundTags(caption: string, aiTags: unknown, baseTags: string[]): string[] {
+  if (!Array.isArray(aiTags)) return baseTags;
+  const allowed = new Set(baseTags.map((t) => t.toLowerCase()));
+  for (const raw of aiTags) {
+    if (typeof raw !== "string") continue;
+    const t = raw.trim().toLowerCase();
+    if (!t || t.length < 2 || t.length > 30) continue;
+    if (STOPWORDS.has(t) || /^(premium|curated|luxury|authentic|original|genuine|guaranteed|best|new)$/.test(t)) continue;
+    if (allowed.has(t) || (traceableToSource(t, caption) && !hasUngroundedEntityInText(caption, t))) {
+      allowed.add(t);
+    }
+  }
+  return Array.from(allowed).slice(0, 10);
+}
+
+function groundFaqs(
+  caption: string,
+  aiFaqs: unknown,
+  baseFaqs: Array<{ q: string; a: string }>,
+  costPrice: number,
+): Array<{ q: string; a: string }> {
+  if (!Array.isArray(aiFaqs)) return baseFaqs;
+  const cleaned: Array<{ q: string; a: string }> = [];
+  for (const item of aiFaqs) {
+    if (!item || typeof item !== "object") continue;
+    const rawQ = typeof (item as { q?: unknown }).q === "string" ? (item as { q: string }).q.trim() : "";
+    const rawA = typeof (item as { a?: unknown }).a === "string" ? (item as { a: string }).a.trim() : "";
+    if (!rawQ || !rawA || rawQ.length < 5 || rawA.length < 5) continue;
+    const combined = `${rawQ} ${rawA}`;
+    if (hasUngroundedEntityInText(caption, combined)) continue;
+    const q = cleanProse(rawQ, costPrice).slice(0, 160);
+    const a = cleanProse(rawA, costPrice).slice(0, 400);
+    if (q && a) cleaned.push({ q: q.endsWith("?") ? q : `${q}?`, a });
+  }
+  return cleaned.length >= 2 ? cleaned.slice(0, 6) : baseFaqs;
+}
+
+function groundVariants(
+  caption: string,
+  aiVariants: unknown,
+  baseVariants: Array<{ label: string; axis: "size" | "color" }>,
+): Array<{ label: string; axis: "size" | "color" }> {
+  if (!Array.isArray(aiVariants) || !aiVariants.length) return baseVariants;
+  if (baseVariants.length > 0) return baseVariants;
+  const valid: Array<{ label: string; axis: "size" | "color" }> = [];
+  for (const v of aiVariants) {
+    if (!v || typeof v !== "object") continue;
+    const label = typeof (v as { label?: unknown }).label === "string" ? (v as { label: string }).label.trim().slice(0, 24) : "";
+    const axis = (v as { axis?: unknown }).axis === "color" ? "color" : (v as { axis?: unknown }).axis === "size" ? "size" : null;
+    if (!label || !axis) continue;
+    if (traceableToSource(label, caption)) {
+      valid.push({ label, axis });
+    }
+  }
+  return valid.length ? valid.slice(0, 12) : baseVariants;
+}
+
+/** Main entrypoint: GROQ-first text intelligence with Gemini fallback + strict factual validation. */
 export async function enrichProduct(input: EnrichmentInput): Promise<Enrichment> {
   const t0 = Date.now();
   const base = deterministicEnrich(input);
   // `base` is both the fallback and the grounding source: the model is shown
   // only the attributes already extracted from the caption.
-  const ai = await llmEnrich(input, base);
-  if (!ai) return { ...base, latencyMs: Date.now() - t0 };
+  const llmResult = await llmEnrich(input, base);
+  if (!llmResult) return { ...base, latencyMs: Date.now() - t0 };
+  const { data: ai, modelUsed } = llmResult;
 
-  // Prose grounding. specs are already filtered by groundSpecs(); this covers
-  // description / shortAnswer / subtitle, where an ungrounded technical claim
-  // reads as a product fact. If the model used a term the supplier never wrote,
-  // its prose for that field is discarded wholesale rather than partially
-  // rewritten - a half-filtered sentence would still imply the claim.
-  const descriptionClaims = ungroundedClaims(input.caption, String(ai.description ?? ""));
-  const shortAnswerClaims = ungroundedClaims(input.caption, String(ai.shortAnswer ?? ""));
-  const subtitleClaims = ungroundedClaims(input.caption, String(ai.subtitle ?? ""));
+  // Prose & field grounding. Every field is checked for ungrounded technical
+  // claims, ungrounded brands/materials, and commercial leaks. If the model
+  // used a claim the supplier never wrote, that field falls back to `base`.
+  const titleUngrounded = hasUngroundedEntityInText(input.caption, String(ai.title ?? ""));
+  const descriptionUngrounded = hasUngroundedEntityInText(input.caption, String(ai.description ?? ""));
+  const shortAnswerUngrounded = hasUngroundedEntityInText(input.caption, String(ai.shortAnswer ?? ""));
+  const subtitleUngrounded = hasUngroundedEntityInText(input.caption, String(ai.subtitle ?? ""));
+  const seoTitleUngrounded = hasUngroundedEntityInText(input.caption, String(ai.seoTitle ?? ""));
+  const seoDescUngrounded = hasUngroundedEntityInText(input.caption, String(ai.seoDescription ?? ""));
+  const altTextUngrounded = hasUngroundedEntityInText(input.caption, String(ai.altText ?? ""));
 
-  const finalCat = typeof ai.categorySlug === "string" && VALID_CATS.has(ai.categorySlug) ? ai.categorySlug : base.categorySlug;
-  const finalBrand = typeof ai.brand === "string" && traceableToSource(ai.brand, input.caption) ? titleCase(ai.brand).slice(0, 40) : base.brand;
-  const rawTitle = clampStr(ai.title, 90, base.title);
-  const finalTitle = cleanTitleText(rawTitle, finalCat, finalBrand);
+  const finalCat =
+    typeof ai.categorySlug === "string" && VALID_CATS.has(ai.categorySlug) && base.confidence < 0.9
+      ? ai.categorySlug
+      : base.categorySlug;
+  const finalBrand =
+    typeof ai.brand === "string" && traceableToSource(ai.brand, input.caption)
+      ? titleCase(ai.brand).slice(0, 40)
+      : base.brand;
+  const finalColor =
+    typeof ai.color === "string" && traceableToSource(ai.color, input.caption)
+      ? titleCase(ai.color).slice(0, 30)
+      : base.color;
+  const finalMaterial =
+    typeof ai.material === "string" && traceableToSource(ai.material, input.caption)
+      ? titleCase(ai.material).slice(0, 40)
+      : base.material;
 
-  const rawSub = subtitleClaims.length ? base.subtitle : clampStr(ai.subtitle, 120, base.subtitle);
-  const finalSub = cleanProse(rawSub, base.costPrice);
+  const rawTitle = titleUngrounded ? base.title : clampStr(ai.title, 90, base.title);
+  const finalTitle = cleanTitleText(rawTitle, finalCat, finalBrand) || base.title;
 
-  const rawDesc = descriptionClaims.length ? base.description : clampStr(ai.description, 2000, base.description);
-  const finalDesc = cleanProse(rawDesc, base.costPrice);
+  const rawSub = subtitleUngrounded ? base.subtitle : clampStr(ai.subtitle, 120, base.subtitle);
+  const finalSub = cleanProse(rawSub, base.costPrice) || base.subtitle;
 
-  const rawShort = shortAnswerClaims.length ? base.shortAnswer : clampStr(ai.shortAnswer, 600, base.shortAnswer);
-  const finalShort = cleanProse(rawShort, base.costPrice);
+  const rawDesc = descriptionUngrounded ? base.description : clampStr(ai.description, 2000, base.description);
+  const finalDesc = cleanProse(rawDesc, base.costPrice) || base.description;
 
-  const cleanSpecs = ai.specs && typeof ai.specs === "object"
-    ? { ...base.specs, ...(ai.specs as Record<string, string>) }
-    : base.specs;
+  const rawShort = shortAnswerUngrounded ? base.shortAnswer : clampStr(ai.shortAnswer, 600, base.shortAnswer);
+  const finalShort = cleanProse(rawShort, base.costPrice) || base.shortAnswer;
+
+  const groundedAiSpecs = groundSpecs(input.caption, ai.specs as Record<string, string> | undefined);
+  const cleanSpecs: Record<string, string> = {
+    ...base.specs,
+    ...groundedAiSpecs,
+  };
+  if (finalBrand) cleanSpecs.Brand = finalBrand;
+  else delete cleanSpecs.Brand;
+  if (finalColor) cleanSpecs.Colour = finalColor;
+  else delete cleanSpecs.Colour;
+  if (finalMaterial) cleanSpecs.Material = finalMaterial;
+  else delete cleanSpecs.Material;
   cleanSpecs.Category = titleCase(finalCat);
+  cleanSpecs.Gender = base.specs.Gender;
+  cleanSpecs.Delivery = base.specs.Delivery;
+  cleanSpecs.Sourcing = base.specs.Sourcing;
+
+  const finalGender =
+    (ai.gender === "men" || ai.gender === "women") && base.gender !== "unisex"
+      ? ai.gender
+      : base.gender;
+
+  const rawSeoTitle = seoTitleUngrounded ? base.seoTitle : clampStr(ai.seoTitle, 60, base.seoTitle);
+  const rawSeoDesc = seoDescUngrounded ? base.seoDescription : clampStr(ai.seoDescription, 158, base.seoDescription);
+  const rawAltText = altTextUngrounded ? base.altText : clampStr(ai.altText, 160, base.altText);
 
   const merged: Enrichment = {
     ...base,
@@ -1012,28 +1267,273 @@ export async function enrichProduct(input: EnrichmentInput): Promise<Enrichment>
     shortAnswer: finalShort,
     categorySlug: finalCat,
     brand: finalBrand,
-    color:
-      typeof ai.color === "string" && traceableToSource(ai.color, input.caption)
-        ? titleCase(ai.color).slice(0, 30)
-        : base.color,
-    material:
-      typeof ai.material === "string" && traceableToSource(ai.material, input.caption)
-        ? titleCase(ai.material).slice(0, 40)
-        : base.material,
-    gender: ai.gender === "men" || ai.gender === "women" ? ai.gender : base.gender,
-    tags: Array.isArray(ai.tags) ? ai.tags.filter((t) => typeof t === "string").slice(0, 12) : base.tags,
+    color: finalColor,
+    material: finalMaterial,
+    gender: finalGender,
+    tags: groundTags(input.caption, ai.tags, base.tags),
     specs: cleanSpecs,
-    faqs: Array.isArray(ai.faqs) && ai.faqs.length >= 2 ? ai.faqs.slice(0, 6) : base.faqs,
-    seoTitle: cleanTitleText(clampStr(ai.seoTitle, 60, base.seoTitle), finalCat, finalBrand),
-    seoDescription: cleanProse(clampStr(ai.seoDescription, 158, base.seoDescription), base.costPrice),
-    altText: cleanTitleText(clampStr(ai.altText, 160, base.altText), finalCat, finalBrand),
-    variants: Array.isArray(ai.variants) && ai.variants.length ? ai.variants.slice(0, 12) : base.variants,
-    costPrice: Number.isFinite(ai.costPrice) && Number(ai.costPrice) > 0 && extractNumbers(input.caption).includes(Math.round(Number(ai.costPrice))) ? Math.round(Number(ai.costPrice)) : base.costPrice,
-    mrp: Number.isFinite(ai.mrp) && Number(ai.mrp) > 0 ? Math.round(Number(ai.mrp)) : base.mrp,
+    faqs: groundFaqs(input.caption, ai.faqs, base.faqs, base.costPrice),
+    seoTitle: cleanTitleText(rawSeoTitle, finalCat, finalBrand) || base.seoTitle,
+    seoDescription: cleanProse(rawSeoDesc, base.costPrice) || base.seoDescription,
+    altText: cleanTitleText(rawAltText, finalCat, finalBrand) || base.altText,
+    variants: groundVariants(input.caption, ai.variants, base.variants),
+    costPrice:
+      Number.isFinite(ai.costPrice) &&
+      Number(ai.costPrice) > 0 &&
+      extractNumbers(input.caption).includes(Math.round(Number(ai.costPrice)))
+        ? Math.round(Number(ai.costPrice))
+        : base.costPrice,
+    mrp: 0, // Always derived downstream by computePricing (cost × 1.40)
     confidence: Number.isFinite(ai.confidence) ? Math.min(1, Math.max(0, Number(ai.confidence))) : base.confidence,
-    model: process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL,
+    model: modelUsed,
     latencyMs: Date.now() - t0,
-  };  return { ...merged, qualityScore: qualityScore(merged, Boolean(input.imageUrl)) };
+  };
+  return { ...merged, qualityScore: qualityScore(merged, Boolean(input.imageUrl)) };
+}
+
+/* ---------------- Gemini visual verification & frame selection ---------------- */
+
+export type MediaVerificationInput = {
+  imageUrls?: string[];
+  imageBuffers?: Array<{ buffer: Buffer; mimeType?: string }>;
+  caption?: string;
+  expectedCategory?: string | null;
+};
+
+export type MediaVerification = {
+  usable: boolean;
+  showsIntendedProduct: boolean;
+  isBlurry: boolean;
+  isObstructed: boolean;
+  isMisleading: boolean;
+  bestFrameIndex: number;
+  usableIndices: number[];
+  viewAngles: Array<"front" | "side" | "back" | "detail" | "angled" | "unknown">;
+  detectedCategory: string | null;
+  confidence: number;
+  reason: string | null;
+  model: string;
+  cached: boolean;
+};
+
+const mediaVerificationCache = new Map<string, { value: MediaVerification; expires: number }>();
+
+function isValidMediaUrl(url: string): boolean {
+  if (!url || typeof url !== "string") return false;
+  const trimmed = url.trim();
+  if (!/^https?:\/\/[^\s]+$/i.test(trimmed)) return false;
+  if (/\.(svg|gif|ico)(\?|$)/i.test(trimmed)) return false;
+  return true;
+}
+
+/**
+ * Verifies product media without ever modifying or generating pixels.
+ *
+ * 1. Runs zero-cost deterministic checks on URLs/buffers first.
+ * 2. Caches verification results for 7 days by media key so repeated products
+ *    or retries never re-consume Gemini quota.
+ * 3. Uses Gemini multimodal (`GEMINI_API_KEY`) only when available and within
+ *    free-quota concurrency/cooldown limits to verify product presence,
+ *    detect blur/obstruction/misleading frames, and pick the cleanest primary frame.
+ */
+export async function verifyProductMedia(input: MediaVerificationInput): Promise<MediaVerification> {
+  const urls = (input.imageUrls ?? []).map((u) => String(u || "").trim()).filter(Boolean);
+  const buffers = input.imageBuffers ?? [];
+  const totalCount = buffers.length || urls.length;
+
+  if (totalCount === 0) {
+    return {
+      usable: false,
+      showsIntendedProduct: false,
+      isBlurry: false,
+      isObstructed: false,
+      isMisleading: false,
+      bestFrameIndex: 0,
+      usableIndices: [],
+      viewAngles: [],
+      detectedCategory: null,
+      confidence: 1,
+      reason: "no product media supplied",
+      model: "deterministic-media-v1",
+      cached: false,
+    };
+  }
+
+  // Deterministic URL/buffer validation first (zero API cost).
+  const validIndices: number[] = [];
+  if (buffers.length > 0) {
+    buffers.forEach((item, idx) => {
+      if (item?.buffer && item.buffer.length >= 1024) validIndices.push(idx);
+    });
+  } else {
+    urls.forEach((u, idx) => {
+      if (isValidMediaUrl(u)) validIndices.push(idx);
+    });
+  }
+
+  if (validIndices.length === 0) {
+    return {
+      usable: false,
+      showsIntendedProduct: false,
+      isBlurry: false,
+      isObstructed: false,
+      isMisleading: true,
+      bestFrameIndex: 0,
+      usableIndices: [],
+      viewAngles: [],
+      detectedCategory: null,
+      confidence: 1,
+      reason: "invalid or corrupt product media",
+      model: "deterministic-media-v1",
+      cached: false,
+    };
+  }
+
+  const cacheKey = `${input.expectedCategory ?? "any"}::${urls.slice(0, 4).join("|")}::${buffers.length}`;
+  const cached = mediaVerificationCache.get(cacheKey);
+  if (cached && cached.expires > Date.now()) {
+    quotaStats.mediaCacheHits += 1;
+    return { ...cached.value, cached: true };
+  }
+
+  const deterministicDefault: MediaVerification = {
+    usable: true,
+    showsIntendedProduct: true,
+    isBlurry: false,
+    isObstructed: false,
+    isMisleading: false,
+    bestFrameIndex: validIndices[0] ?? 0,
+    usableIndices: validIndices,
+    viewAngles: validIndices.map(() => "front"),
+    detectedCategory: input.expectedCategory ?? null,
+    confidence: 0.8,
+    reason: null,
+    model: "deterministic-media-v1",
+    cached: false,
+  };
+
+  // Only invoke Gemini Vision when GEMINI_API_KEY is configured and not cooling down.
+  const key = process.env.GEMINI_API_KEY;
+  if (!key || Date.now() < geminiCooldownUntil) {
+    mediaVerificationCache.set(cacheKey, { value: deterministicDefault, expires: Date.now() + GEMINI_CACHE_TTL_MS });
+    return deterministicDefault;
+  }
+
+  let resolvedBuffers = buffers.slice(0, 3);
+  if (resolvedBuffers.length === 0 && urls.length > 0) {
+    const fetched: Array<{ buffer: Buffer; mimeType?: string }> = [];
+    for (const url of urls.slice(0, 2)) {
+      if (/^https?:\/\/(x|example\.com|localhost)\b/i.test(url)) continue;
+      try {
+        const res = await fetch(url, { signal: AbortSignal.timeout(4000) });
+        if (!res.ok) continue;
+        const ct = res.headers.get("content-type") || "image/webp";
+        if (!ct.startsWith("image/")) continue;
+        const ab = await res.arrayBuffer();
+        if (ab.byteLength >= 1024 && ab.byteLength <= 4 * 1024 * 1024) {
+          fetched.push({ buffer: Buffer.from(ab), mimeType: ct.split(";")[0] });
+        }
+      } catch {
+        /* unreachable URL falls back to deterministic */
+      }
+    }
+    resolvedBuffers = fetched;
+  }
+
+  if (resolvedBuffers.length === 0) {
+    mediaVerificationCache.set(cacheKey, { value: deterministicDefault, expires: Date.now() + GEMINI_CACHE_TTL_MS });
+    return deterministicDefault;
+  }
+
+  return withGeminiSlot(async () => {
+    const model = process.env.GEMINI_VISION_MODEL || process.env.GEMINI_MODEL || GEMINI_DEFAULT_MODEL;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 10_000);
+    try {
+      quotaStats.geminiVisionCalls += 1;
+      const candidateBuffers = resolvedBuffers.slice(0, 3);
+      const parts: Array<Record<string, unknown>> = [
+        {
+          text: [
+            "You are MatzHub's visual product verifier. Inspect the candidate product image(s)/frame(s).",
+            `Expected category: ${input.expectedCategory || "unknown"}`,
+            `Supplier caption: ${(input.caption || "").slice(0, 300)}`,
+            "Rules:",
+            "1. Verify whether the image(s) clearly show the actual physical product without heavy blur, severe obstruction, or misleading/unrelated content (e.g. text-only flyer, QR code, screenshot of chat, blank frame).",
+            "2. Identify the view angle of each image ('front', 'side', 'back', 'detail', 'angled', 'unknown') and select bestFrameIndex (0-based) with the clearest, sharpest, unobstructed primary view of the product.",
+            "3. Verify visual consistency across frames.",
+            'Return ONLY valid minified JSON: {"usable":boolean,"showsIntendedProduct":boolean,"isBlurry":boolean,"isObstructed":boolean,"isMisleading":boolean,"bestFrameIndex":number,"usableIndices":number[],"viewAngles":string[],"detectedCategory":string|null,"confidence":number,"reason":string|null}',
+          ].join("\n"),
+        },
+      ];
+      for (const item of candidateBuffers) {
+        parts.push({
+          inline_data: {
+            mime_type: item.mimeType || "image/webp",
+            data: item.buffer.toString("base64"),
+          },
+        });
+      }
+
+      const res = await fetch(`${GEMINI_ENDPOINT}/${model}:generateContent`, {
+        method: "POST",
+        signal: controller.signal,
+        headers: { "Content-Type": "application/json", "x-goog-api-key": key },
+        body: JSON.stringify({
+          generationConfig: { temperature: 0.1, responseMimeType: "application/json", maxOutputTokens: 400 },
+          contents: [{ role: "user", parts }],
+        }),
+      });
+
+      if (res.status === 429 || res.status === 503) {
+        quotaStats.geminiRateLimited += 1;
+        geminiCooldownUntil = Date.now() + parseRetryAfterMs(res);
+        return deterministicDefault;
+      }
+      if (!res.ok) return deterministicDefault;
+
+      const json = (await res.json()) as {
+        candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+      };
+      const raw = json.candidates?.[0]?.content?.parts?.map((p) => p.text ?? "").join("") ?? "";
+      const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+      if (!cleaned) return deterministicDefault;
+
+      const parsed = JSON.parse(cleaned) as Partial<MediaVerification>;
+      const usableIndices = Array.isArray(parsed.usableIndices)
+        ? parsed.usableIndices.filter((i) => Number.isInteger(i) && i >= 0 && i < totalCount)
+        : validIndices;
+      const bestFrameIndex =
+        typeof parsed.bestFrameIndex === "number" &&
+        parsed.bestFrameIndex >= 0 &&
+        parsed.bestFrameIndex < totalCount
+          ? parsed.bestFrameIndex
+          : (usableIndices[0] ?? 0);
+      const usable = Boolean(parsed.usable ?? true) && Boolean(parsed.showsIntendedProduct ?? true) && !parsed.isMisleading && usableIndices.length > 0;
+
+      const result: MediaVerification = {
+        usable,
+        showsIntendedProduct: Boolean(parsed.showsIntendedProduct ?? usable),
+        isBlurry: Boolean(parsed.isBlurry ?? false),
+        isObstructed: Boolean(parsed.isObstructed ?? false),
+        isMisleading: Boolean(parsed.isMisleading ?? false),
+        bestFrameIndex,
+        usableIndices: usable ? usableIndices : [],
+        viewAngles: Array.isArray(parsed.viewAngles) ? (parsed.viewAngles.slice(0, totalCount) as MediaVerification["viewAngles"]) : deterministicDefault.viewAngles,
+        detectedCategory: typeof parsed.detectedCategory === "string" ? parsed.detectedCategory : (input.expectedCategory ?? null),
+        confidence: Number.isFinite(parsed.confidence) ? Math.min(1, Math.max(0, Number(parsed.confidence))) : 0.85,
+        reason: typeof parsed.reason === "string" && parsed.reason.trim() ? parsed.reason.trim().slice(0, 200) : null,
+        model: `gemini:${model}`,
+        cached: false,
+      };
+      mediaVerificationCache.set(cacheKey, { value: result, expires: Date.now() + GEMINI_CACHE_TTL_MS });
+      return result;
+    } catch {
+      return deterministicDefault;
+    } finally {
+      clearTimeout(timer);
+    }
+  });
 }
 
 /* ---------------- pricing intelligence ---------------- */

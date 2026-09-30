@@ -110,7 +110,14 @@ export async function applyResolution(
     imageUrl: string | null;
     contentHash: string | null;
     imageHash: string | null;
-    enrichment: { costPrice: number; qualityScore: number; confidence: number };
+    enrichment: {
+      costPrice: number;
+      qualityScore: number;
+      confidence: number;
+      title?: string;
+      description?: string;
+      shortAnswer?: string;
+    };
   },
 ): Promise<{ stage: string; productId?: string }> {
   const { messageId, caption, imageUrl, contentHash, enrichment } = args;
@@ -138,7 +145,10 @@ export async function applyResolution(
         .where(eq(products.id, resolution.productId))
         .limit(1);
       if (resolution.changes.includes("caption") && caption) {
-        const re = await enrichProduct({ caption, imageUrl });
+        const re =
+          enrichment.title && enrichment.description && enrichment.shortAnswer
+            ? { title: enrichment.title, description: enrichment.description, shortAnswer: enrichment.shortAnswer }
+            : await enrichProduct({ caption, imageUrl });
         const isGenericFallback = /^(Unisex |Men's |Women's )?(Handbag|Watch|Shoe|Perfume|Sunglass|Apparel|Bag|Shirt)/i.test(re.title) && (existing?.title?.length ?? 0) > re.title.length + 10;
         // Never overwrite a descriptive title with a generic fallback on a price-only follow-up.
         if (!isGenericFallback) {

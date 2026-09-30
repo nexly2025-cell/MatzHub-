@@ -31,32 +31,132 @@ fs.mkdirSync(TMP, { recursive: true });
 
 const WORKERTIMEOUT = 30000;
 
+export const MIN_IMAGE_DIMENSION = 160;
+export const MAX_ASPECT_RATIO = 4.0;
+export const MIN_LUMA_STDEV = 3.5;
+export const MIN_USABLE_SHARPNESS = 3.5;
+
 /* ------------------------------------------------------------------ */
-/* sharpness: variance-of-Laplacian estimate via sharp stats            */
+/* sharpness: true 2D Laplacian standard deviation via sharp raw buffer */
 /* ------------------------------------------------------------------ */
-async function sharpness(buffer) {
+export async function sharpness(buffer) {
   const sharpModule = (await import("sharp")).default;
-  const { stats } = await sharpModule(buffer)
+  const pipeline = sharpModule(buffer)
+    .rotate()
     .greyscale()
-    .stats();
-  // Higher variance within a luma channel ≈ more edges ≈ sharper frame
+    .resize({ width: 256, height: 256, fit: "inside", withoutEnlargement: true });
+  if (typeof pipeline.raw === "function") {
+    try {
+      const { data, info } = await pipeline.raw().toBuffer({ resolveWithObject: true });
+      const w = info.width;
+      const h = info.height;
+      if (w >= 3 && h >= 3) {
+        let sum = 0;
+        let sq = 0;
+        let count = 0;
+        for (let y = 1; y < h - 1; y += 1) {
+          const row = y * w;
+          for (let x = 1; x < w - 1; x += 1) {
+            const idx = row + x;
+            const lap = data[idx - w] + data[idx + w] + data[idx - 1] + data[idx + 1] - 4 * data[idx];
+            sum += lap;
+            sq += lap * lap;
+            count += 1;
+          }
+        }
+        if (count > 0) {
+          const mean = sum / count;
+          return Math.sqrt(Math.max(0, sq / count - mean * mean));
+        }
+      }
+    } catch {
+      /* fallback to channel stdev if raw extraction is mocked */
+    }
+  }
+  const stats = await sharpModule(buffer).greyscale().stats();
   return stats.channels[0].stdev;
 }
 
+/**
+ * Deterministic image quality & usability check (zero API cost).
+ * Rejects corrupt buffers, tiny icons, extreme text-banner strips, blank/solid
+ * frames, and severely blurred captures without touching valid product images.
+ */
+export async function assessImageQuality(buffer, { minDimension = MIN_IMAGE_DIMENSION, minSharpness = MIN_USABLE_SHARPNESS } = {}) {
+  if (!buffer || !Buffer.isBuffer(buffer) || buffer.length < 128) {
+    return { usable: false, width: 0, height: 0, sharpness: 0, lumaStdev: 0, reason: "empty_or_corrupt_buffer" };
+  }
+  try {
+    const sharpModule = (await import("sharp")).default;
+    const meta = await sharpModule(buffer).metadata();
+    const width = Number(meta.width || 0);
+    const height = Number(meta.height || 0);
+    if (!width || !height) {
+      return { usable: false, width: 0, height: 0, sharpness: 0, lumaStdev: 0, reason: "invalid_dimensions" };
+    }
+    if (width < minDimension || height < minDimension) {
+      return { usable: false, width, height, sharpness: 0, lumaStdev: 0, reason: "resolution_too_low" };
+    }
+    const aspect = width / height;
+    if (aspect > MAX_ASPECT_RATIO || aspect < 1 / MAX_ASPECT_RATIO) {
+      return { usable: false, width, height, sharpness: 0, lumaStdev: 0, reason: "extreme_aspect_ratio" };
+    }
+    const lumaStats = await sharpModule(buffer).rotate().greyscale().stats();
+    const lumaStdev = lumaStats.channels[0]?.stdev ?? 0;
+    if (lumaStdev < MIN_LUMA_STDEV) {
+      return { usable: false, width, height, sharpness: 0, lumaStdev, reason: "blank_or_uniform_frame" };
+    }
+    const edgeScore = await sharpness(buffer);
+    if (edgeScore < minSharpness) {
+      return { usable: false, width, height, sharpness: edgeScore, lumaStdev, reason: "blurry_frame" };
+    }
+    return { usable: true, width, height, sharpness: edgeScore, lumaStdev, reason: null };
+  } catch {
+    return { usable: false, width: 0, height: 0, sharpness: 0, lumaStdev: 0, reason: "unreadable_image" };
+  }
+}
+
 /* ------------------------------------------------------------------ */
-/* image optimisation to WebP ≤ 200 KB                                   */
+/* Safe deterministic cleanup & optimisation to WebP ≤ 200 KB           */
+/* Preserves exact product shape, proportions, colour, and details.     */
 /* ------------------------------------------------------------------ */
-export async function optimiseImage(buffer, { minQuality = 38, maxWidth = 1200 } = {}) {
+export async function optimiseImage(buffer, { minQuality = 46, maxWidth = 1200, trimBorders = true } = {}) {
   const sharpModule = (await import("sharp")).default;
-  let quality = 82;
+  let sourceBuffer = buffer;
+
+  // Safe border whitespace/letterbox trim: ONLY keep the trim if it preserves
+  // at least 75% of both width and height, guaranteeing we never crop into the product.
+  if (trimBorders) {
+    try {
+      const meta = await sharpModule(buffer).rotate().metadata();
+      if (meta.width && meta.height && typeof sharpModule(buffer).trim === "function") {
+        const trimmed = await sharpModule(buffer)
+          .rotate()
+          .trim({ threshold: 8 })
+          .toBuffer({ resolveWithObject: true });
+        if (
+          trimmed.info.width >= meta.width * 0.75 &&
+          trimmed.info.height >= meta.height * 0.75 &&
+          trimmed.info.width >= MIN_IMAGE_DIMENSION &&
+          trimmed.info.height >= MIN_IMAGE_DIMENSION
+        ) {
+          sourceBuffer = trimmed.data;
+        }
+      }
+    } catch {
+      sourceBuffer = buffer;
+    }
+  }
+
+  let quality = 84;
   let width = maxWidth;
   let out = null;
-  while (width >= 560) {
+  while (width >= 640) {
     while (quality >= minQuality) {
-      out = await sharpModule(buffer)
+      out = await sharpModule(sourceBuffer)
         .rotate()
-        .resize({ width, withoutEnlargement: true })
-        .webp({ quality, effort: 4 })
+        .resize({ width, withoutEnlargement: true, fit: "inside" })
+        .webp({ quality, effort: 4, smartSubsample: true })
         .toBuffer();
       if (out.length <= 200 * 1024) return out;
       quality -= 6;
@@ -123,83 +223,120 @@ export async function processVideo(buffer, { frames = 4, transcodeAboveMB = 12 }
     if (fs.existsSync(out)) frameFiles.push(out);
   }
 
-  // 3. Score sharpness, sort, optimise to WebP
+  // 3. Assess quality, filter unusable/blurry frames, sort, and optimise to WebP
   const sharpModule = (await import("sharp")).default;
   const scored = await Promise.all(
     frameFiles.map(async (file, i) => {
       const jpeg = fs.readFileSync(file);
-      const score = await sharpness(jpeg).catch(() => 0);
+      const quality = await assessImageQuality(jpeg);
+      if (!quality.usable) return null;
+      const hash = crypto.createHash("sha1").update(jpeg).digest("hex");
       const webp = await optimiseImage(jpeg);
-      return { i, score, webp: webp ?? (await sharpModule(jpeg).webp({ quality: 65 }).toBuffer()) };
+      return {
+        i,
+        hash,
+        score: quality.sharpness,
+        webp: webp ?? (await sharpModule(jpeg).webp({ quality: 65 }).toBuffer()),
+      };
     }),
   );
-  scored.sort((a, b) => b.score - a.score);
 
-  // best frame first, then remaining in their original temporal order
-  const best = scored[0];
-  const rest = scored.slice(1).sort((a, b) => a.i - b.i);
+  const usableFrames = [];
+  const seenFrameHashes = new Set();
+  for (const item of scored) {
+    if (!item || seenFrameHashes.has(item.hash)) continue;
+    seenFrameHashes.add(item.hash);
+    usableFrames.push(item);
+  }
+
+  usableFrames.sort((a, b) => b.score - a.score);
+  const topScore = usableFrames[0]?.score ?? 0;
+  const cleanFrames = usableFrames.filter((f) => f.score >= topScore * 0.45);
+
+  // best frame first, then remaining clean frames in their original temporal order
+  const best = cleanFrames[0];
+  const rest = cleanFrames.slice(1).sort((a, b) => a.i - b.i);
 
   // 4. Transcode to a lighter mp4 if the source is bulky (720p, CRF 28, AAC ~96k)
   let videoOut = buffer;
+  const lightOut = path.join(TMP, `light-${id}.mp4`);
   if (buffer.length > transcodeAboveMB * 1024 * 1024) {
-    const out = path.join(TMP, `light-${id}.mp4`);
     try {
       await run(
         ffmpegPath,
         ["-y", "-i", input, "-vf", "scale='min(720,iw)':-2", "-pix_fmt", "yuv420p",
          "-c:v", "libx264", "-crf", "28", "-preset", "veryfast", "-movflags", "+faststart",
-         "-c:a", "aac", "-b:a", "96k", out],
+         "-c:a", "aac", "-b:a", "96k", lightOut],
         { timeout: 120000 },
       );
-      if (fs.existsSync(out) && fs.statSync(out).size > 0) videoOut = fs.readFileSync(out);
+      if (fs.existsSync(lightOut) && fs.statSync(lightOut).size > 0) videoOut = fs.readFileSync(lightOut);
     } catch {
       videoOut = buffer;
     }
   }
 
   // 5. cleanup
-  for (const f of [input, ...frameFiles]) {
+  for (const f of [input, lightOut, ...frameFiles]) {
     try { fs.unlinkSync(f); } catch { /* ignore */ }
   }
 
   return {
     videoBuffer: videoOut,
-    frames: [best, ...rest].map((f) => f.webp),
+    frames: best ? [best, ...rest].map((f) => f.webp) : [],
     bestIndex: 0, // best is always index 0 after ordering
   };
 }
 
 /* ------------------------------------------------------------------ */
-/* multi-image: blur-dedupe + preserve order                            */
+/* multi-image: quality check + blur-dedupe + best cover selection      */
 /* ------------------------------------------------------------------ */
 export async function processImages(buffers) {
   const sharpModule = (await import("sharp")).default;
-  if (!buffers.length) return [];
+  if (!Array.isArray(buffers) || !buffers.length) return [];
 
   const processed = await Promise.all(
     buffers.map(async (buf, index) => {
-      const score = await sharpness(buf).catch(() => 0);
+      const quality = await assessImageQuality(buf);
+      if (!quality.usable) return null;
       const hash = crypto.createHash("sha1").update(buf).digest("hex");
       const webp = await optimiseImage(buf);
-      return { index, score, hash, webp: webp ?? (await sharpModule(buf).webp({ quality: 60 }).toBuffer()) };
+      return {
+        index,
+        score: quality.sharpness,
+        hash,
+        webp: webp ?? (await sharpModule(buf).webp({ quality: 65 }).toBuffer()),
+      };
     }),
   );
 
   const kept = [];
   const seen = new Set();
   for (const item of processed) {
-    if (seen.has(item.hash)) continue;               // exact same image twice
+    if (!item) continue;
+    if (seen.has(item.hash)) continue; // exact same image twice
     seen.add(item.hash);
     kept.push(item);
   }
 
-  // If ALL frames are low-sharpness keep them anyway (bad > none); otherwise drop
-  // frames that are distinctly blurrier than the best frame we have.
+  // Never publish unusable/blurry representations: if no frame passed quality
+  // checks, return [] so ingestion routes the listing to review.
+  if (!kept.length) return [];
+
   const bestScore = Math.max(...kept.map((k) => k.score));
   const refined = kept.filter((k) => k.score >= bestScore * 0.35);
 
-  // Preserve original order for the gallery (index asc)
-  return refined.sort((a, b) => a.index - b.index).map((k) => k.webp);
+  // Order by original sequence, but if the first image is significantly blurrier
+  // than the sharpest view in the set, promote the sharpest view to cover (index 0).
+  const ordered = refined.sort((a, b) => a.index - b.index);
+  if (ordered.length > 1 && ordered[0].score < bestScore * 0.6) {
+    const sharpestIdx = ordered.findIndex((item) => item.score === bestScore);
+    if (sharpestIdx > 0) {
+      const [sharpest] = ordered.splice(sharpestIdx, 1);
+      ordered.unshift(sharpest);
+    }
+  }
+
+  return ordered.map((k) => k.webp);
 }
 
 /**
@@ -227,6 +364,15 @@ export function toPublicUrl(url) {
   }
 }
 
-const mediaEngine = { optimiseImage, processVideo, processImages, sharpness, framesForCategory, getPublicUrl, toPublicUrl };
+const mediaEngine = {
+  optimiseImage,
+  processVideo,
+  processImages,
+  sharpness,
+  assessImageQuality,
+  framesForCategory,
+  getPublicUrl,
+  toPublicUrl,
+};
 
 export default mediaEngine;

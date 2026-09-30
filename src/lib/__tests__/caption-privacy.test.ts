@@ -18,11 +18,12 @@ describe("supplier caption sanitiser", () => {
     expect(out).toContain("Chronograph Steel 42mm sapphire");
   });
 
-  it("strips every common way a supplier writes a price", () => {
+  it("strips every common way a supplier writes a price, including '<amount> only'", () => {
     for (const line of [
       "Cost 2400", "cost:1850", "Price 999", "Rate 1200/-", "rs 450", "INR 3000",
       "₹2,400", "MRP 5999", "2400/-", "1850 rs", "net 900", "deal 700",
       "wholesale 1200", "dealer price 800", "per piece 340", "margin 15",
+      "900 only", "1,250 only", "1,250/- only", "only 640", "only ₹850",
     ]) {
       const out = sanitizeSupplierCaption(`Leather Tote Bag\n${line}`);
       expect(out, `leaked: ${line}`).toBe("Leather Tote Bag");

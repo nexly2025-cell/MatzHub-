@@ -54,10 +54,9 @@ export function runtime() {
     node: process.version,
     env: process.env.NODE_ENV,
     logLevel: process.env.LOG_LEVEL || "info",
-    // Mirrors the single provider enrichProduct() actually calls. This was
-    // OPENAI_API_KEY, which is unset in production, so /api/monitoring reported
-    // ai:false while the captioning path silently never ran.
-    ai: Boolean(process.env.GEMINI_API_KEY),
+    // Mirrors the AI providers enrichProduct() and verifyProductMedia() call
+    // (GROQ for text intelligence, Gemini for visual verification & fallback).
+    ai: Boolean(process.env.GROQ_API_KEY || process.env.GEMINI_API_KEY),
     whatsappWorker: Boolean(process.env.WA_WORKER_URL),
     telegram: Boolean(process.env.TELEGRAM_ADMIN_BOT_TOKEN),
     storage: Boolean(process.env.SUPABASE_URL),

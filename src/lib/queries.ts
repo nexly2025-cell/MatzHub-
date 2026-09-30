@@ -1,6 +1,7 @@
 import { and, asc, desc, eq, gte, inArray, lte, ne, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { categories, manufacturers, opsTasks, orders, products, reviews } from "@/db/schema";
+import { sanitizeSpecs } from "@/lib/privacy";
 import { searchMatchSql, searchRankSql } from "@/lib/search";
 import { toPublicMediaUrl } from "@/lib/storage";
 
@@ -171,6 +172,7 @@ export async function getProductBySlug(slug: string) {
   if (!p) return null;
   return {
     ...p,
+    specs: sanitizeSpecs(p.specs ?? {}),
     heroImage: toPublicMediaUrl(p.heroImage) || p.heroImage,
     images: Array.isArray(p.images) ? p.images.map((u) => toPublicMediaUrl(u) || u) : p.images,
     videoUrl: p.videoUrl ? toPublicMediaUrl(p.videoUrl) || p.videoUrl : p.videoUrl,

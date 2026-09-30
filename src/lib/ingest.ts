@@ -13,7 +13,7 @@ import {
   productVariants,
   products,
 } from "@/db/schema";
-import { computePricing, enrichProduct, slugify, normalizeCategoryAlias, detectCategory } from "@/lib/ai";
+import { computePricing, enrichProduct, verifyProductMedia, slugify, normalizeCategoryAlias, detectCategory } from "@/lib/ai";
 import { isAutoUploadEnabled } from "@/lib/telegram";
 import { uploadsPermitted } from "@/lib/subscription";
 import { classifyMessage, applyResolution } from "@/lib/reconcile";
@@ -263,12 +263,13 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
     imageHash,
   });
   if (resolution.action !== "create") {
-    // Run enrichment BEFORE applying the update so quality, confidence and
-    // pricing reflect the actual incoming message — not zeros that would
-    // overwrite previously good data.
-    const preEnrich = resolution.action === "update"
-      ? await enrichProduct({ caption, imageUrl: msg.imageUrl, groupName: msg.groupName ?? mfr.sourceGroupName, defaultCategory: null })
-      : null;
+    // Run enrichment once BEFORE applying the update (only when caption text is
+    // present) and pass the full result to applyResolution so it is never
+    // recomputed a second time.
+    const preEnrich =
+      resolution.action === "update" && caption.trim()
+        ? await enrichProduct({ caption, imageUrl: msg.imageUrl, groupName: msg.groupName ?? mfr.sourceGroupName, defaultCategory: null })
+        : null;
     const out = await applyResolution(resolution, {
       messageId: msg.messageId,
       caption,
@@ -276,7 +277,14 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       contentHash: captionHash,
       imageHash,
       enrichment: preEnrich
-        ? { costPrice: preEnrich.costPrice, qualityScore: preEnrich.qualityScore, confidence: preEnrich.confidence }
+        ? {
+            costPrice: preEnrich.costPrice,
+            qualityScore: preEnrich.qualityScore,
+            confidence: preEnrich.confidence,
+            title: preEnrich.title,
+            description: preEnrich.description,
+            shortAnswer: preEnrich.shortAnswer,
+          }
         : { costPrice: 0, qualityScore: 0, confidence: 0 },
     });
     await log(out.stage === 'updated' ? 'updated' : 'deduped', { productId: out.productId });
@@ -358,22 +366,55 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
   // display price — it is a factual signal and 1.40× is only a fallback.
   const pricing = computePricing({ costPrice: enrichment.costPrice });
 
-  // ---- 5. publish decision -------------------------------------------
+  // ---- 5. media verification & publish decision ----------------------
   // A verified supplier group is an operational source, not a moderation
   // queue. Valid media with a usable selling price publishes immediately.
   // The incident pause and subscription gates remain hard operational stops.
+  const rawImages = msg.imageUrls?.length
+    ? msg.imageUrls.filter(Boolean)
+    : msg.imageUrl
+      ? [msg.imageUrl]
+      : [];
+  const mediaCheck = await verifyProductMedia({
+    imageUrls: rawImages,
+    caption,
+    expectedCategory: enrichment.categorySlug,
+  });
+
+  // Order verified usable images with the clearest primary view first, without
+  // ever altering or replacing the actual product media.
+  let orderedImages = rawImages;
+  if (rawImages.length > 1 && mediaCheck.usableIndices.length > 0) {
+    const primaryIdx = mediaCheck.usableIndices.includes(mediaCheck.bestFrameIndex)
+      ? mediaCheck.bestFrameIndex
+      : mediaCheck.usableIndices[0];
+    const primaryUrl = rawImages[primaryIdx];
+    const remainingUrls = mediaCheck.usableIndices
+      .filter((idx) => idx !== primaryIdx)
+      .map((idx) => rawImages[idx])
+      .filter(Boolean);
+    if (primaryUrl) orderedImages = [primaryUrl, ...remainingUrls];
+  }
+
   const [manualOn, subscription] = await Promise.all([isAutoUploadEnabled(), uploadsPermitted()]);
   const uploadsOn = manualOn && subscription.permitted;
-  const heroImage = msg.imageUrls?.[0] ?? msg.imageUrl ?? "";
+  const heroImage = orderedImages[0] ?? "";
   // `pricing.price > 0` is NOT a real check: computePricing floors both price
   // and mrp at Math.max(1, ...), so a caption whose price could not be parsed
   // yields costPrice 0 and still satisfies it — publishing a live, orderable
   // product at Rs 1. Gate on the parsed cost instead, which is only non-zero
   // when a genuine rupee figure was found in the supplier's message.
   const hasRealPrice = enrichment.costPrice > 0 && pricing.price > 1;
-  const autoOk = uploadsOn && mfr.autoPublish && Boolean(heroImage) && hasRealPrice;
+  const autoOk = uploadsOn && mfr.autoPublish && Boolean(heroImage) && mediaCheck.usable && hasRealPrice;
 
   const status = autoOk ? "published" : "pending_review";
+  // Preserve `moderationReason = null` when held solely because uploads are
+  // paused so `releaseSubscriptionHeldProducts` can release it later. Record
+  // an explicit moderationReason when media verification fails.
+  const moderationReason =
+    rawImages.length > 0 && !mediaCheck.usable
+      ? mediaCheck.reason || "Product media flagged for manual verification"
+      : null;
   const slug = await uniqueSlug(`${enrichment.title}-${enrichment.color ?? ""}`);
   const sku = `MH-${(cat?.slug ?? "gen").slice(0, 3).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
 
@@ -397,11 +438,7 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       specs: enrichment.specs,
       tags: enrichment.tags,
       faqs: enrichment.faqs,
-      images: msg.imageUrls?.length
-        ? msg.imageUrls
-        : msg.imageUrl
-          ? [msg.imageUrl]
-          : [],
+      images: orderedImages,
       heroImage,
       videoUrl: msg.videoUrl ?? null,
       mediaType: msg.mediaType ?? (msg.videoUrl ? "video" : "image"),
@@ -415,6 +452,7 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       stockQty: 0,
       availability: "in_stock",
       status,
+      moderationReason,
       qualityScore: enrichment.qualityScore,
       confidence: enrichment.confidence,
       seoTitle: enrichment.seoTitle,
@@ -478,6 +516,12 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       qualityScore: enrichment.qualityScore,
       confidence: enrichment.confidence,
       pricing,
+      mediaVerification: {
+        usable: mediaCheck.usable,
+        bestFrameIndex: mediaCheck.bestFrameIndex,
+        model: mediaCheck.model,
+        cached: mediaCheck.cached,
+      },
     },
   });
 
@@ -495,6 +539,13 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
   };
 
   if (!autoOk) {
+    const holdReason = !uploadsOn
+      ? "uploads are paused"
+      : !heroImage
+        ? "no product media"
+        : !mediaCheck.usable
+          ? mediaCheck.reason || "product media failed verification"
+          : "no usable selling price";
     await db.insert(notifications).values({
       channel: "telegram",
       audience: "ops",
@@ -502,14 +553,20 @@ async function ingestMessageOnce(msg: RawMessage): Promise<IngestResult> {
       template: "moderation_needed",
       payload: {
         ...notificationPayload,
-        reason: !uploadsOn ? "automatic publishing is paused" : !msg.imageUrl ? "product media is required" : "usable product price was not extracted",
+        reason: !uploadsOn
+          ? "automatic publishing is paused"
+          : !heroImage
+            ? "product media is required"
+            : !mediaCheck.usable
+              ? mediaCheck.reason || "product media failed verification"
+              : "usable product price was not extracted",
       },
     });
     await db.insert(opsTasks).values({
       kind: "moderation",
-      severity: enrichment.qualityScore < 35 ? "high" : "medium",
+      severity: enrichment.qualityScore < 35 || !mediaCheck.usable ? "high" : "medium",
       title: `Review: ${enrichment.title}`,
-      detail: `Automatic publishing is blocked: ${!uploadsOn ? "uploads are paused" : !msg.imageUrl ? "no product media" : "no usable selling price"}. Quality ${enrichment.qualityScore}/100 · confidence ${(enrichment.confidence * 100).toFixed(0)}%.`,
+      detail: `Automatic publishing is blocked: ${holdReason}. Quality ${enrichment.qualityScore}/100 · confidence ${(enrichment.confidence * 100).toFixed(0)}%.`,
       entityType: "product",
       entityId: created.id,
       actionUrl: `/admin/moderation`,

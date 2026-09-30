@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { desc, eq, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { products } from "@/db/schema";
+import { toPublicMediaUrl } from "@/lib/storage";
 import { inr } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -69,7 +70,11 @@ export default async function Catalog({ searchParams }: { searchParams: Promise<
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-3">
                     <div className="relative h-11 w-11 shrink-0 overflow-hidden rounded-md bg-surface-3">
-                      <Image src={p.heroImage} alt="" fill sizes="44px" className="object-cover" />
+                      {p.heroImage ? (
+                        <Image src={toPublicMediaUrl(p.heroImage) || p.heroImage} alt="" fill sizes="44px" className="object-cover" />
+                      ) : (
+                        <div className="grid h-full place-items-center text-[9px] text-muted">N/A</div>
+                      )}
                     </div>
                     <div className="min-w-0">
                       <Link href={`/p/${p.slug}`} className="line-clamp-1 max-w-[240px] hover:text-accent">{p.title}</Link>

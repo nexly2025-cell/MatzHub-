@@ -136,3 +136,387 @@ describe("title uses the descriptive line", () => {
     expect(e.title.toLowerCase()).toContain("handbag");
   });
 });
+
+describe("non-negotiable factual grounding (text intelligence)", () => {
+  it("detects ungrounded technical claims, materials, warranties, and fabricated dimensions", async () => {
+    const { ungroundedClaims, groundSpecs } = await import("@/lib/ai");
+
+    const caption = "Casio watch black dial stainless steel strap Rs 1150";
+    // Supported claims in caption
+    expect(ungroundedClaims(caption, "Casio watch with black dial and stainless steel strap")).toEqual([]);
+
+    // Unsupported claims invented by AI
+    const invented = ungroundedClaims(
+      caption,
+      "Featuring a precise Japanese quartz movement, sapphire crystal, 42mm case, waterproof 5 ATM, and 1 year warranty.",
+    );
+    expect(invented).toContain("japanese");
+    expect(invented).toContain("quartz");
+    expect(invented).toContain("sapphire crystal");
+    expect(invented).toContain("waterproof");
+    expect(invented).toContain("1 year");
+    expect(invented.some((c) => c.includes("42mm"))).toBe(true);
+
+    // Spec table grounding drops fabricated specs & policy overrides while keeping grounded ones
+    const specs = groundSpecs(caption, {
+      Strap: "Stainless steel",
+      Movement: "Japanese Quartz",
+      Glass: "Sapphire Crystal",
+      "Case size": "44mm",
+      Material: "Genuine Italian Leather",
+      Warranty: "2 Years",
+      Supplier: "Factory 9",
+      Weight: "Unknown",
+    });
+    expect(specs.Strap).toBe("Stainless steel");
+    expect(specs.Movement).toBeUndefined();
+    expect(specs.Glass).toBeUndefined();
+    expect(specs["Case size"]).toBeUndefined();
+    expect(specs.Material).toBeUndefined();
+    expect(specs.Warranty).toBeUndefined();
+    expect(specs.Supplier).toBeUndefined();
+    expect(specs.Weight).toBeUndefined();
+  });
+
+  it("allows GROQ to rewrite supported facts while stripping fabricated claims, brands, tags, FAQs, and variants", async () => {
+    const { enrichProduct, clearEnrichmentCache } = await import("@/lib/ai");
+    clearEnrichmentCache();
+
+    const origGroqKey = process.env.GROQ_API_KEY;
+    const origFetch = globalThis.fetch;
+    process.env.GROQ_API_KEY = "test-groq-key";
+
+    try {
+      // 1) Supported rewrite survives cleanly
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    title: "Casio Black Dial Stainless Steel Watch",
+                    subtitle: "Casio · Black · Watches",
+                    description:
+                      "This Casio timepiece pairs a clean black dial with a brushed stainless steel bracelet for structured everyday wear.",
+                    shortAnswer:
+                      "Casio black dial watch with a stainless steel strap, available through MatzHub.",
+                    categorySlug: "watches",
+                    brand: "Casio",
+                    color: "Black",
+                    material: "Stainless Steel",
+                    gender: "men",
+                    tags: ["watches", "casio", "black", "stainless steel", "waterproof", "swiss", "premium"],
+                    specs: { Strap: "Stainless Steel", Movement: "Automatic Tourbillon" },
+                    faqs: [
+                      { q: "What strap does this Casio watch use?", a: "It comes with a stainless steel strap and black dial." },
+                      { q: "Does it have a Swiss sapphire crystal?", a: "Yes, it uses a Swiss made sapphire crystal with 1 year warranty." },
+                    ],
+                    variants: [{ label: "42mm", axis: "size" }],
+                    costPrice: 1200,
+                    confidence: 0.9,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch;
+
+      const supported = await enrichProduct({
+        caption: "Casio watch for men black dial stainless steel strap\n1200 only",
+        groupName: "Smart Collections_Watches",
+      });
+
+      expect(supported.title).toBe("Casio Black Dial Stainless Steel Watch");
+      expect(supported.description).toContain("clean black dial");
+      expect(supported.description).not.toContain("1200");
+      expect(supported.specs.Strap).toBe("Stainless Steel");
+      // Fabricated spec, tags, FAQ, and variant are rejected
+      expect(supported.specs.Movement).toBeUndefined();
+      expect(supported.tags).not.toContain("waterproof");
+      expect(supported.tags).not.toContain("swiss");
+      expect(supported.tags).not.toContain("premium");
+      expect(supported.variants).toEqual([]);
+      expect(supported.faqs.some((f) => /sapphire|swiss/i.test(f.a))).toBe(false);
+      expect(supported.model).toMatch(/^groq:/);
+
+      // 2) Hallucinated brand, material, and prose claims fall back to deterministic grounded facts
+      clearEnrichmentCache();
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    title: "Rolex Automatic Sapphire Waterproof Watch",
+                    subtitle: "Swiss Made 42mm Quartz",
+                    description: "Crafted from genuine leather with a Japanese quartz movement and 5 ATM water resistance.",
+                    shortAnswer: "A waterproof 42mm Rolex watch with sapphire crystal.",
+                    categorySlug: "watches",
+                    brand: "Rolex",
+                    color: "Gold",
+                    material: "Genuine Leather",
+                    gender: "men",
+                    costPrice: 9999,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch;
+
+      const grounded = await enrichProduct({
+        caption: "Black dial watch with metal strap for men\n850 only",
+        groupName: "Smart Collections_Watches",
+      });
+
+      expect(grounded.brand).toBeNull();
+      expect(grounded.color).toBe("Black");
+      expect(grounded.material).toBe("Metal");
+      expect(grounded.title.toLowerCase()).not.toContain("rolex");
+      expect(grounded.title.toLowerCase()).not.toContain("automatic");
+      expect(grounded.description.toLowerCase()).not.toContain("japanese");
+      expect(grounded.description.toLowerCase()).not.toContain("quartz");
+      expect(grounded.description.toLowerCase()).not.toContain("850");
+      expect(grounded.costPrice).toBe(850);
+    } finally {
+      process.env.GROQ_API_KEY = origGroqKey;
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("media processing & visual verification (image + video frame safety)", () => {
+  it("preserves product colour, geometry, and pattern while trimming only outer uniform border and rejecting bad media", async () => {
+    const sharp = (await import("sharp")).default;
+    // @ts-expect-error -- ESM worker module imported directly in node test
+    const mediaEngine = (await import("../../../worker/media-engine.mjs")).default;
+
+    // 1. Create a realistic sharp product image (400x400) with a distinct central
+    // crimson product body (R=190, G=35, B=45) and high-contrast inner pattern/logo bars,
+    // surrounded by a 20px white border.
+    const width = 400;
+    const height = 400;
+    const rawPixels = Buffer.alloc(width * height * 3, 255); // white background
+    for (let y = 20; y < 380; y += 1) {
+      for (let x = 20; x < 380; x += 1) {
+        const idx = (y * width + x) * 3;
+        if (x >= 90 && x < 310 && y >= 90 && y < 310) {
+          // Product body with crisp emblem grid lines every 16px
+          const isPattern = (x % 16 < 3) || (y % 16 < 3);
+          rawPixels[idx] = isPattern ? 245 : 190;
+          rawPixels[idx + 1] = isPattern ? 245 : 35;
+          rawPixels[idx + 2] = isPattern ? 245 : 45;
+        } else {
+          // Neutral studio surface around product
+          rawPixels[idx] = 235;
+          rawPixels[idx + 1] = 235;
+          rawPixels[idx + 2] = 235;
+        }
+      }
+    }
+    const validProductPng = await sharp(rawPixels, { raw: { width, height, channels: 3 } }).png().toBuffer();
+
+    const quality = await mediaEngine.assessImageQuality(validProductPng);
+    expect(quality.usable).toBe(true);
+    expect(quality.sharpness).toBeGreaterThan(2.5);
+
+    const cleanedWebp = await mediaEngine.optimiseImage(validProductPng);
+    const outMeta = await sharp(cleanedWebp).metadata();
+    expect(outMeta.format).toBe("webp");
+    // Geometry & aspect ratio preserved (square 1:1)
+    expect(Math.abs((outMeta.width ?? 0) - (outMeta.height ?? 0))).toBeLessThanOrEqual(2);
+
+    // Verify central product colour is preserved without colour shift compared to source
+    // (20px outer white border was cleanly trimmed: 400x400 -> 360x360, so (140,140) maps to (120,120))
+    expect(outMeta.width).toBe(360);
+    expect(outMeta.height).toBe(360);
+    const origCenter = await sharp(validProductPng)
+      .extract({ left: 140, top: 140, width: 120, height: 120 })
+      .stats();
+    const centerCrop = await sharp(cleanedWebp)
+      .extract({ left: 120, top: 120, width: 120, height: 120 })
+      .stats();
+    expect(centerCrop.channels[0].mean).toBeGreaterThan(centerCrop.channels[1].mean + 25);
+    expect(Math.abs(centerCrop.channels[0].mean - origCenter.channels[0].mean)).toBeLessThan(15);
+    expect(Math.abs(centerCrop.channels[1].mean - origCenter.channels[1].mean)).toBeLessThan(15);
+    expect(Math.abs(centerCrop.channels[2].mean - origCenter.channels[2].mean)).toBeLessThan(15);
+
+    // 2. Reject blank/solid image
+    const blankBuf = await sharp({
+      create: { width: 400, height: 400, channels: 3, background: { r: 240, g: 240, b: 240 } },
+    }).png().toBuffer();
+    const blankCheck = await mediaEngine.assessImageQuality(blankBuf);
+    expect(blankCheck.usable).toBe(false);
+    expect(blankCheck.reason).toBe("blank_or_uniform_frame");
+
+    // 3. Reject tiny icon (< 160px)
+    const tinyBuf = await sharp(validProductPng).resize(80, 80).png().toBuffer();
+    const tinyCheck = await mediaEngine.assessImageQuality(tinyBuf);
+    expect(tinyCheck.usable).toBe(false);
+    expect(tinyCheck.reason).toBe("resolution_too_low");
+
+    // 4. Reject severely blurred frame
+    const blurryBuf = await sharp(validProductPng).blur(25).png().toBuffer();
+    const blurryCheck = await mediaEngine.assessImageQuality(blurryBuf);
+    expect(blurryCheck.usable).toBe(false);
+    expect(blurryCheck.reason).toBe("blurry_frame");
+
+    // 5. Multi-image / video-frame selection: given [blurryBuf, validProductPng, duplicate validProductPng],
+    // rejects blurry & duplicate frames and promotes the sharp valid frame to cover.
+    const processedList = await mediaEngine.processImages([blurryBuf, validProductPng, validProductPng, blankBuf]);
+    expect(processedList.length).toBe(1);
+
+    // If ALL candidate frames are unusable, returns [] rather than publishing bad media
+    const allBad = await mediaEngine.processImages([blurryBuf, blankBuf, tinyBuf]);
+    expect(allBad).toEqual([]);
+  });
+
+  it("uses Gemini Vision for frame selection and misleading-media rejection when configured", async () => {
+    const { verifyProductMedia, clearEnrichmentCache } = await import("@/lib/ai");
+    clearEnrichmentCache();
+
+    const origGeminiKey = process.env.GEMINI_API_KEY;
+    const origFetch = globalThis.fetch;
+    process.env.GEMINI_API_KEY = "test-gemini-key";
+
+    try {
+      globalThis.fetch = (async () =>
+        new Response(
+          JSON.stringify({
+            candidates: [
+              {
+                content: {
+                  parts: [
+                    {
+                      text: JSON.stringify({
+                        usable: true,
+                        showsIntendedProduct: true,
+                        isBlurry: false,
+                        isObstructed: false,
+                        isMisleading: false,
+                        bestFrameIndex: 1,
+                        usableIndices: [1],
+                        viewAngles: ["unknown", "front"],
+                        detectedCategory: "watches",
+                        confidence: 0.94,
+                        reason: null,
+                      }),
+                    },
+                  ],
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        )) as typeof fetch;
+
+      const fakeBuffer = Buffer.alloc(2048, 42);
+      const res = await verifyProductMedia({
+        imageUrls: ["https://cdn.example.org/frame0.webp", "https://cdn.example.org/frame1.webp"],
+        imageBuffers: [{ buffer: fakeBuffer }, { buffer: fakeBuffer }],
+        caption: "Casio silver chrono watch 1200 only",
+        expectedCategory: "watches",
+      });
+
+      expect(res.usable).toBe(true);
+      expect(res.bestFrameIndex).toBe(1);
+      expect(res.usableIndices).toEqual([1]);
+      expect(res.model).toMatch(/^gemini:/);
+      expect(res.cached).toBe(false);
+
+      // Second call with identical media hits cache without another API call
+      const second = await verifyProductMedia({
+        imageUrls: ["https://cdn.example.org/frame0.webp", "https://cdn.example.org/frame1.webp"],
+        imageBuffers: [{ buffer: fakeBuffer }, { buffer: fakeBuffer }],
+        caption: "Casio silver chrono watch 1200 only",
+        expectedCategory: "watches",
+      });
+      expect(second.cached).toBe(true);
+    } finally {
+      process.env.GEMINI_API_KEY = origGeminiKey;
+      globalThis.fetch = origFetch;
+    }
+  });
+});
+
+describe("free-quota & caching efficiency", () => {
+  it("caches identical captions, skips LLM on price-only messages, and backs off on HTTP 429", async () => {
+    const { enrichProduct, clearEnrichmentCache, getAiQuotaStats } = await import("@/lib/ai");
+    clearEnrichmentCache();
+
+    const origGroqKey = process.env.GROQ_API_KEY;
+    const origFetch = globalThis.fetch;
+    process.env.GROQ_API_KEY = "test-groq-key";
+
+    let apiCallCount = 0;
+    try {
+      globalThis.fetch = (async () => {
+        apiCallCount += 1;
+        return new Response(
+          JSON.stringify({
+            choices: [
+              {
+                message: {
+                  content: JSON.stringify({
+                    title: "Leather Tote Bag Brown",
+                    description: "Brown leather tote bag with three compartments.",
+                    shortAnswer: "Brown leather tote bag with three compartments.",
+                    categorySlug: "handbags",
+                    color: "Brown",
+                    material: "Leather",
+                    costPrice: 890,
+                  }),
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch;
+
+      // 1. Price-only / empty caption skips LLM entirely
+      await enrichProduct({ caption: "890 only", groupName: "Smart Collections_Premium Bags" });
+      expect(apiCallCount).toBe(0);
+      expect(getAiQuotaStats().skippedShortCaption).toBeGreaterThanOrEqual(1);
+
+      // 2. Meaningful caption calls GROQ once, then serves from cache on repeat
+      const caption = "Brown leather tote bag with 3 compartments\n890 only";
+      await enrichProduct({ caption, groupName: "Smart Collections_Premium Bags" });
+      expect(apiCallCount).toBe(1);
+
+      await enrichProduct({ caption: "  Brown leather tote bag with 3 compartments   890 only ", groupName: "Smart Collections_Premium Bags" });
+      expect(apiCallCount).toBe(1); // Cache hit!
+
+      // 3. HTTP 429 rate limit activates cooldown so subsequent calls don't hammer the API
+      clearEnrichmentCache();
+      apiCallCount = 0;
+      globalThis.fetch = (async () => {
+        apiCallCount += 1;
+        return new Response("Too Many Requests", { status: 429, headers: { "retry-after": "30" } });
+      }) as typeof fetch;
+
+      const fallback1 = await enrichProduct({
+        caption: "Silver chronograph watch leather strap 1100 only",
+        groupName: "Smart Collections_Watches",
+      });
+      expect(apiCallCount).toBe(1);
+      expect(fallback1.model).toBe("matzhub-rules-v2");
+      expect(getAiQuotaStats().groqCoolingDown).toBe(true);
+
+      // Next product during cooldown immediately uses deterministic rules without calling fetch
+      await enrichProduct({
+        caption: "Black wayfarer sunglasses polarised UV400 450 only",
+        groupName: "Smart Collections_Sunglasses",
+      });
+      expect(apiCallCount).toBe(1);
+    } finally {
+      clearEnrichmentCache();
+      process.env.GROQ_API_KEY = origGroqKey;
+      globalThis.fetch = origFetch;
+    }
+  });
+});
